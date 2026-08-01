@@ -1,0 +1,28 @@
+name: build
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        openmp: ["yes", "no"]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y build-essential autoconf automake libtool
+      - run: autoreconf -fi
+      - run: ./configure --enable-openmp=${{ matrix.openmp }}
+      - run: make -j"$(nproc)" || true
+      - name: SPOOLES CC fix if the first make stopped there
+        run: |
+          if [ ! -x sdpa_gmp ] && [ -f external/spooles/work/internal/Make.inc ]; then
+            sed -i 's|^# CC = gcc|  CC = gcc|' external/spooles/work/internal/Make.inc
+            ( cd external/spooles/work/internal && find . -name '*.o' -delete && rm -f spooles.a \
+              && make global -f makefile && cp spooles.a ../../../i/SPOOLES/lib/libspooles.a )
+          fi
+      - run: make -j"$(nproc)"
+      - name: OpenMP linkage matches the matrix
+        run: |
+          n=$(ldd sdpa_gmp | grep -c gomp || true)
+          [ "${{ matrix.openmp }}" = yes ] && [ "$n" -ge 1 ] || { [ "${{ matrix.openmp }}" = no ] && [ "$n" -eq 0 ]; }
+      - run: ./sdpa_gmp -ds example1.dat-s -o out.result -p param.sdpa && grep objValPrimal out.result
