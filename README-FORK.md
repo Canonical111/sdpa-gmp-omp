@@ -20,4 +20,29 @@ SPOOLES; if SPOOLES stops with a `struct timezone` error, set `CC = gcc` in its 
 see CI for the exact commands). Threshold caveat: the OpenMP work thresholds were calibrated
 on double-double at ~256-bit cost; other precisions should re-run the calibration sweep.
 
+### macOS (Apple Silicon) — verified on an M1 Max
+
+The bundled GMP 6.2.1's own test suite bus-errors on Apple Silicon, so use Homebrew's GMP
+via the configure option upstream already provides. `/usr/bin/gcc` is Apple clang (no
+OpenMP); Homebrew GCC is required:
+
+```bash
+brew install gcc gmp autoconf automake libtool
+GCC=$(ls $(brew --prefix gcc)/bin/gcc-[0-9]* | head -1)   # resolve the current version
+GXX=$(ls $(brew --prefix gcc)/bin/g++-[0-9]* | head -1)   # (brew install may have just upgraded it)
+autoreconf -fi
+./configure CC="$GCC" CXX="$GXX" --enable-openmp=yes \
+            --with-system-gmp --with-gmp-includedir=/opt/homebrew/include \
+            --with-gmp-libdir=/opt/homebrew/lib
+make -j8 || true   # first pass stops inside SPOOLES (Apple's c99 rejects the flags) -- expected
+M=external/spooles/work/internal/Make.inc
+sed -i '' 's|^# CC = gcc|  CC = '$GCC'|' $M
+sed -i '' 's|^  CFLAGS += -O2 -funroll-all-loops|  CFLAGS += -O2 -funroll-all-loops -Wno-error=int-conversion -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types|' $M
+( cd external/spooles/work/internal && find . -name '*.o' -delete && rm -f spooles.a \
+  && make global -f makefile && mkdir -p ../../../i/SPOOLES/lib \
+  && cp spooles.a ../../../i/SPOOLES/lib/libspooles.a )
+make -j8
+otool -L sdpa_gmp | grep gomp   # must print libgomp
+```
+
 License: GPL v2, unchanged (`COPYING`); original SDPA authors retain copyright.
