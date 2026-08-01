@@ -20,7 +20,7 @@ Solver-internal timers are elapsed time in sdpa-dd/sdpa-gmp; upstream sdpa-qd's 
 reports process CPU time (summed over threads), which this fork fixes -- all qd numbers here
 use external wall time and the corrected clock.
 
-## Results
+## thanos — EPYC 7232P, 8 physical cores
 
 ## thanos-epyc7232p — gmp-200bit — `wall_s`
 
@@ -52,7 +52,79 @@ Median of 3 repeats, seconds (`wall_s`). Spread = (max-min)/median.
 | arch0 | 36.6 | 36.3 | 36.5 | 36.5 | 36.2 |
 
 
-Iteration counts and objectives are identical across every repeat and every configuration.
+## pi — i9-13900K, 24 physical cores
+
+The `fork*` binary here is the one produced by the README build instructions, from a fresh
+clone of this repository — the benchmark validates the installation guide's output, not a
+hand-configured tree. `fork8P` is pinned to the 8 P-cores only.
+
+## pi-i9-13900k — gmp-200bit — `wall_s`
+
+Median of 3 repeats, seconds (`wall_s`). Spread = (max-min)/median.
+
+| problem | m | pristine1 | pristine24 | fork1 | fork8P | fork24 |
+|---|---|---|---|---|---|---|
+| control1 | 21 | 0.100 | 0.110 | 0.100 | 0.100 | 0.100 |
+| gpp100 | 101 | 18.230 | 5.820 | 18.220 | 6.340 | 5.700 |
+| theta1 | 104 | 1.580 ±1% | 1.060 | 1.470 ±1% | 0.970 | 0.990 ±1% |
+| truss5 | 208 | 5.590 | 5.780 | 5.590 | 4.280 | 4.270 |
+| arch0 | 174 | 67.220 | 42.500 | 62.200 | 19.330 | 16.530 |
+| **total** | | **92.7** | **55.3** | **87.6** | **31.0** | **27.6** |
+
+**fork24 vs pristine1: 3.36x**  (totals 92.7 s -> 27.6 s)
+
+### Integrity
+
+- all repeats `ok`; iteration count and objective identical across repeats and across configs for every problem
+
+### Peak RSS (MB, max over repeats)
+
+| problem | pristine1 | pristine24 | fork1 | fork8P | fork24 |
+|---|---|---|---|---|---|
+| control1 | 5.2 | 5.2 | 5.2 | 5.2 | 5.2 |
+| gpp100 | 17.8 | 17.5 | 17.7 | 17.5 | 17.5 |
+| theta1 | 9.3 | 9.0 | 9.4 | 9.7 | 9.9 |
+| truss5 | 13.3 | 13.3 | 13.4 | 13.0 | 13.2 |
+| arch0 | 36.4 | 36.4 | 36.4 | 36.2 | 36.4 |
+
+
+## Mac — Apple M1 Max (8P+2E)
+
+The fork binary is again the one built by this README's macOS instructions.
+
+## mac-m1max — gmp-200bit — `wall_s`
+
+Median of 3 repeats, seconds (`wall_s`). Spread = (max-min)/median.
+
+| problem | m | pristine1 | pristine8 | fork1 | fork8 |
+|---|---|---|---|---|---|
+| control1 | 21 | 0.200 ±5% | 0.330 | 0.200 | 0.210 ±10% |
+| gpp100 | 101 | 34.250 ±1% | 13.300 ±1% | 33.980 | 13.170 ±1% |
+| theta1 | 104 | 2.940 ±1% | 2.110 ±2% | 2.840 ±3% | 2.000 ±2% |
+| truss5 | 208 | 10.980 | 11.890 ±1% | 11.010 ±1% | 8.490 ±2% |
+| arch0 | 174 | 123.610 ±1% | 87.820 ±1% | 118.450 ±1% | 39.430 ±1% |
+| **total** | | **172.0** | **115.4** | **166.5** | **63.3** |
+
+**fork8 vs pristine1: 2.72x**  (totals 172.0 s -> 63.3 s)
+
+### Integrity
+
+- all repeats `ok`; iteration count and objective identical across repeats and across configs for every problem
+
+### Peak RSS (MB, max over repeats)
+
+| problem | pristine1 | pristine8 | fork1 | fork8 |
+|---|---|---|---|---|
+| control1 | 8.6 | 8.6 | 8.6 | 8.6 |
+| gpp100 | 14.3 | 14.4 | 14.3 | 14.5 |
+| theta1 | 8.6 | 8.6 | 8.6 | 8.6 |
+| truss5 | 12.0 | 12.1 | 12.0 | 12.2 |
+| arch0 | 29.5 | 29.6 | 29.6 | 29.7 |
+
+
+Iteration counts and objectives are identical across every repeat and every configuration,
+on all three machines. Upstream threading is *negative* on `truss5` on every one of them
+(e.g. Mac: 10.98 s serial vs 11.89 s threaded; this fork: 8.49 s).
 Two upstream *regressions* become gains: `control1` (upstream threading 1.10x slower than
 serial; this fork 1.79x faster) and `truss5` (upstream threading net negative: 13.87 s
 serial vs 14.29 s threaded; this fork 11.15 s).
@@ -61,4 +133,4 @@ Caveat carried honestly: the OpenMP work thresholds were calibrated on double-do
 arithmetic; other precisions should re-run the calibration sweep (see the companion
 repository).
 
-Raw data: [`bench/gmp_v2_thanos.tsv`](bench/gmp_v2_thanos.tsv).
+Raw data: [`bench/gmp_v2_thanos.tsv`](bench/gmp_v2_thanos.tsv), [`bench/gmp_v2_pi.tsv`](bench/gmp_v2_pi.tsv).
