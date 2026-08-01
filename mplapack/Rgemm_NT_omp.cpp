@@ -28,6 +28,7 @@
  *
  */
 
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-07-31: zero-skip restored for a future re-enable of its pragmas. See git log. */
 #include <mpblas_gmp.h>
 #ifdef _OPENMP
 #include <omp.h>
@@ -63,12 +64,14 @@ void Rgemm_NT_omp(mplapackint m, mplapackint n, mplapackint k, mpf_class alpha, 
     //#pragma omp parallel for private(j, l, i, temp, templ) schedule(static)
     for (j = 0; j < n; j++) {
         for (l = 0; l < k; l++) {
-            temp = alpha;
-            temp *= B[j + l * ldb];
-            for (i = 0; i < m; i++) {
-                templ = temp;
-                templ *= A[i + l * lda];
-                C[i + j * ldc] += templ;
+            if (B[j + l * ldb] != 0.0) {
+                temp = alpha;
+                temp *= B[j + l * ldb];
+                for (i = 0; i < m; i++) {
+                    templ = temp;
+                    templ *= A[i + l * lda];
+                    C[i + j * ldc] += templ;
+                }
             }
         }
     }

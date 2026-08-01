@@ -28,7 +28,9 @@
  *
  */
 
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-07-31: zero-skip restored; OpenMP gated on work, width and nesting. See git log. */
 #include <mpblas_gmp.h>
+#include "mplapack_omp_tuning.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -41,7 +43,7 @@ void Rgemm_NN_omp(mplapackint m, mplapackint n, mplapackint k, mpf_class alpha, 
     // Handle special cases for beta to optimize performance
     if (beta == 0.0) {
         // If beta is 0, set C to zero
-        #pragma omp parallel for collapse(2) schedule(static) private(i, j)
+        #pragma omp parallel for collapse(2) schedule(static) private(i, j) if ((double)m * (double)n >= MPLAPACK_OMP_MIN_SCALE_WORK && !omp_in_parallel()) num_threads(omp_get_max_threads() < (int)n ? omp_get_max_threads() : (int)n)
         for (j = 0; j < n; j++) {
             for (i = 0; i < m; i++) {
                 C[i + j * ldc] = 0.0;
@@ -49,7 +51,7 @@ void Rgemm_NN_omp(mplapackint m, mplapackint n, mplapackint k, mpf_class alpha, 
         }
     } else if (beta != 1.0) {
         // If beta is not 1, scale C by beta
-        #pragma omp parallel for collapse(2) schedule(static) private(i, j)
+        #pragma omp parallel for collapse(2) schedule(static) private(i, j) if ((double)m * (double)n >= MPLAPACK_OMP_MIN_SCALE_WORK && !omp_in_parallel()) num_threads(omp_get_max_threads() < (int)n ? omp_get_max_threads() : (int)n)
         for (j = 0; j < n; j++) {
             for (i = 0; i < m; i++) {
                 C[i + j * ldc] *= beta;
@@ -59,15 +61,17 @@ void Rgemm_NN_omp(mplapackint m, mplapackint n, mplapackint k, mpf_class alpha, 
     // If beta is 1, no scaling is needed
 
     // Compute alpha * A * B and add to C: C += alpha * A * B
-    #pragma omp parallel for private(j, l, i, temp, templ) schedule(static)
+    #pragma omp parallel for private(j, l, i, temp, templ) schedule(static) if ((double)m * (double)n * (double)k >= MPLAPACK_OMP_MIN_GEMM_WORK && n >= MPLAPACK_OMP_MIN_GEMM_WIDTH && !omp_in_parallel()) num_threads(omp_get_max_threads() < (int)n ? omp_get_max_threads() : (int)n)
     for (j = 0; j < n; j++) {
         for (l = 0; l < k; l++) {
-            temp = alpha;
-            temp *= B[l + j * ldb];
-            for (i = 0; i < m; i++) {
-                templ = temp;
-                templ *= A[i + l * lda];
-                C[i + j * ldc] += templ;
+            if (B[l + j * ldb] != 0.0) {
+                temp = alpha;
+                temp *= B[l + j * ldb];
+                for (i = 0; i < m; i++) {
+                    templ = temp;
+                    templ *= A[i + l * lda];
+                    C[i + j * ldc] += templ;
+                }
             }
         }
     }
