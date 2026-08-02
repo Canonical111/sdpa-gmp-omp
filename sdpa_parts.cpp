@@ -20,9 +20,68 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 ------------------------------------------------------------- */
 
 /* MODIFIED from upstream (GPLv2 2a notice), 2026-07-31: per-formula bMat timers reported as worker-seconds. See git log. */
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-08-02: validate GMP mpf output formats. See git log. */
 #include <sdpa_parts.h>
+#include <cctype>
+#include <cstdlib>
 
 namespace sdpa {
+
+namespace {
+
+bool isMpfConversion(char conversion) {
+    return conversion == 'e' || conversion == 'E' || conversion == 'f' ||
+           conversion == 'F' || conversion == 'g' || conversion == 'G';
+}
+
+bool isValidMpfPrintFormat(const char *format) {
+    if (strcmp(format, NO_P_FORMAT) == 0) {
+        return true;
+    }
+    int conversions = 0;
+    for (size_t i = 0; format[i] != '\0'; ++i) {
+        if (format[i] != '%') {
+            continue;
+        }
+        ++i;
+        if (format[i] == '%') {
+            continue;
+        }
+        while (format[i] == '-' || format[i] == '+' || format[i] == ' ' ||
+               format[i] == '#' || format[i] == '0' || format[i] == '\'') {
+            ++i;
+        }
+        while (std::isdigit(static_cast<unsigned char>(format[i]))) {
+            ++i;
+        }
+        if (format[i] == '.') {
+            ++i;
+            if (!std::isdigit(static_cast<unsigned char>(format[i]))) {
+                return false;
+            }
+            while (std::isdigit(static_cast<unsigned char>(format[i]))) {
+                ++i;
+            }
+        }
+        if (format[i] != 'F' || !isMpfConversion(format[i + 1])) {
+            return false;
+        }
+        ++conversions;
+        ++i;
+    }
+    return conversions == 1;
+}
+
+void validateMpfPrintFormat(const char *name, const char *format) {
+    if (!isValidMpfPrintFormat(format)) {
+        std::cerr << "invalid GMP " << name << " format '" << format
+                  << "'; use one mpf conversion such as %+8.3Fe, or NOPRINT"
+                  << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+} // namespace
 
 ComputeTime::ComputeTime() {
     Predictor = 0.0;
@@ -199,30 +258,14 @@ void Parameter::readFile(FILE *parameterFile) {
     fscanf(parameterFile, "%lf%*[^\n]", &epsilonDash);
     fscanf(parameterFile, "%d%*[^\n]", &precision);
     mpf_set_default_prec(precision);
-    fscanf(parameterFile, "%s %*[^\n]", xPrint);
-    fscanf(parameterFile, "%s %*[^\n]", XPrint);
-    fscanf(parameterFile, "%s %*[^\n]", YPrint);
-    fscanf(parameterFile, "%s %*[^\n]", infPrint);
-    if (strcmp(xPrint, NO_P_FORMAT) != 0 && xPrint[0] != '%') {
-        rMessage("Strange xPrint[" << xPrint
-                                   << "]"
-                                      " might cause trouble when printing x");
-    }
-    if (strcmp(XPrint, NO_P_FORMAT) != 0 && XPrint[0] != '%') {
-        rMessage("Strange XPrint[" << XPrint
-                                   << "]"
-                                      " might cause trouble when printing X.");
-    }
-    if (strcmp(YPrint, NO_P_FORMAT) != 0 && YPrint[0] != '%') {
-        rMessage("Strange YPrint[" << YPrint
-                                   << "]"
-                                      " might cause trouble when printing Y.");
-    }
-    if (strcmp(infPrint, NO_P_FORMAT) != 0 && infPrint[0] != '%') {
-        rMessage("Strange infPrint[" << infPrint
-                                     << "]"
-                                        " might cause trouble when printing information.");
-    }
+    fscanf(parameterFile, "%29s %*[^\n]", xPrint);
+    fscanf(parameterFile, "%29s %*[^\n]", XPrint);
+    fscanf(parameterFile, "%29s %*[^\n]", YPrint);
+    fscanf(parameterFile, "%29s %*[^\n]", infPrint);
+    validateMpfPrintFormat("xPrint", xPrint);
+    validateMpfPrintFormat("XPrint", XPrint);
+    validateMpfPrintFormat("YPrint", YPrint);
+    validateMpfPrintFormat("infPrint", infPrint);
 }
 
 void Parameter::display(FILE *fpout, const char *printFormat) {

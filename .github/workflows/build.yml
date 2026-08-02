@@ -26,3 +26,12 @@ jobs:
           n=$(ldd sdpa_gmp | grep -c gomp || true)
           [ "${{ matrix.openmp }}" = yes ] && [ "$n" -ge 1 ] || { [ "${{ matrix.openmp }}" = no ] && [ "$n" -eq 0 ]; }
       - run: ./sdpa_gmp -ds example1.dat-s -o out.result -p param.sdpa && grep objValPrimal out.result
+      - name: reject unsafe non-GMP output formats
+        run: |
+          cp param.sdpa bad-format.sdpa
+          sed -i '12s/%+50.40Fe/%+8.3e/' bad-format.sdpa
+          if ./sdpa_gmp -ds example1.dat-s -o bad-format.result -p bad-format.sdpa >bad-format.log 2>&1; then
+            echo 'unsafe double format was accepted for an mpf_t value' >&2
+            exit 1
+          fi
+          grep -q 'invalid GMP xPrint format' bad-format.log
