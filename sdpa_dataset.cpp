@@ -147,7 +147,7 @@ void Solutions::display(FILE *fpout) {
     if (fpout == NULL) {
         return;
     }
-    fprintf(fpout, "dimension = \n", nDim);
+    fprintf(fpout, "dimension = %d\n", (int)nDim);
     fprintf(fpout, "xMat = \n");
     xMat.display(fpout);
     fprintf(fpout, "yVec = \n");
