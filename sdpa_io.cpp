@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 ------------------------------------------------------------- */
 
 /* MODIFIED from upstream (GPLv2 2a notice), 2026-08-03: lower-bound validation of input indices; checked fgets in header reader. See git log. */
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-08-04: every gmp_fscanf/fscanf conversion is checked; truncated sparse records and initial-point target values are diagnosed. See git log. */
 #define DIMACS_PRINT 0
 #define MESSAGEBUFFER 512
 
@@ -28,6 +29,55 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 #include <algorithm>
 
 namespace sdpa {
+
+namespace {
+
+// gmp_fscanf's return value was ignored at nearly every call site, so a malformed
+// token left the previous contents of the destination in place and the run
+// continued on data the file never contained. Every conversion now goes through
+// these wrappers. The format string is unchanged, so a well-formed file is
+// converted exactly as before.
+int readReal(FILE *fpData, mpf_class &value) { return gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &value); }
+
+void requireReal(FILE *fpData, mpf_class &value, const char *record, int a, int b, int c, int d) {
+    if (readReal(fpData, value) <= 0) {
+        fprintf(stderr, "SDPA input: missing or malformed value -- expected a number for %s (%d, %d, %d, %d)\n", record, a, b, c, d);
+        rError("io::read missing or malformed value in input");
+    }
+}
+
+void requireReal(FILE *fpData, mpf_class &value, const char *record, int index, int count) {
+    if (readReal(fpData, value) <= 0) {
+        fprintf(stderr, "SDPA input: missing or malformed value -- expected a number for %s, entry %d of %d\n", record, index, count);
+        rError("io::read missing or malformed value in input");
+    }
+}
+
+// A sparse record is five fields wide. Only the FIRST field may legitimately be
+// absent -- that is the end of the data. A record that stops after one to four
+// fields is truncated input and has to be diagnosed; treating it as ordinary loop
+// termination silently discards the rest of the file.
+void reportTruncatedRecord(const char *fileKind, const char *firstFieldName, int fieldsRead, int a, int b, int c, int d) {
+    const int value[4] = {a, b, c, d};
+    const char *name[4] = {firstFieldName, "block", "row", "column"};
+    fprintf(stderr, "%s: truncated record: expected 5 fields <%s> <block> <row> <column> <value>, found %d --", fileKind, firstFieldName, fieldsRead);
+    for (int t = 0; t < fieldsRead && t < 4; ++t) {
+        fprintf(stderr, " %s=%d", name[t], value[t]);
+    }
+    fprintf(stderr, "\n");
+}
+
+// Echo an offending header line without its terminator, so the diagnostic stays
+// on one line.
+void reportBadLine(const char *what, const char *line) {
+    size_t len = 0;
+    while (line[len] != '\0' && line[len] != '\n' && line[len] != '\r') {
+        ++len;
+    }
+    fprintf(stderr, "%s: '%.*s'\n", what, static_cast<int>(len), line);
+}
+
+} // namespace
 
 // 2008/02/27  kazuhide nakata
 #if 0 // not use
@@ -130,23 +180,34 @@ void IO::read(FILE *fpData, FILE *fpout, int &m, char *str) {
         if (str[0] == '*' || str[0] == '"') {
             fprintf(fpout, "%s", str);
         } else {
-            sscanf(str, "%d", &m);
+            if (sscanf(str, "%d", &m) <= 0) {
+                reportBadLine("SDPA data file: the mDim record is not an integer", str);
+                rError("IO::read:: invalid mDim record in the SDPA header");
+            }
             break;
         }
     }
 }
 
-void IO::read(FILE *fpData, int &nBlock) { fscanf(fpData, "%d", &nBlock); }
+void IO::read(FILE *fpData, int &nBlock) {
+    if (fscanf(fpData, "%d", &nBlock) <= 0) {
+        fprintf(stderr, "SDPA data file: the nBlock record is missing or is not an integer\n");
+        rError("IO::read:: invalid nBlock record in the SDPA header");
+    }
+}
 
 void IO::read(FILE *fpData, int nBlock, int *blockStruct) {
     for (int l = 0; l < nBlock; ++l) {
-        fscanf(fpData, "%*[^0-9+-]%d", &blockStruct[l]);
+        if (fscanf(fpData, "%*[^0-9+-]%d", &blockStruct[l]) <= 0) {
+            fprintf(stderr, "SDPA data file: bLOCKsTRUCT entry %d of %d is missing or is not an integer\n", l + 1, nBlock);
+            rError("IO::read:: invalid bLOCKsTRUCT record in the SDPA header");
+        }
     }
 }
 
 void IO::read(FILE *fpData, Vector &b) {
     for (int k = 0; k < b.nDim; ++k) {
-        gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &b.ele[k]);
+        requireReal(fpData, b.ele[k], "the data file's c vector", k + 1, b.nDim);
     }
 }
 
@@ -159,7 +220,7 @@ void IO::read(FILE *fpData, DenseLinearSpace &xMat, Vector &yVec, DenseLinearSpa
     // yVec is opposite sign
     for (int k = 0; k < yVec.nDim; ++k) {
         mpf_class tmp;
-        gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+        requireReal(fpData, tmp, "the initial point file's y vector", k + 1, yVec.nDim);
         yVec.ele[k] = -tmp;
         //     rMessage("yVec.ele[" << k << "] = " << tmp);
     }
@@ -170,19 +231,23 @@ void IO::read(FILE *fpData, DenseLinearSpace &xMat, Vector &yVec, DenseLinearSpa
         mpf_class value;
         while (true) {
             if (fscanf(fpData, "%*[^0-9+-]%d", &target) <= 0) {
-                break;
+                break; // no further record: this is the end of the data
             }
             if (fscanf(fpData, "%*[^0-9+-]%d", &l) <= 0) {
-                break;
+                reportTruncatedRecord("SDPA initial point file", "target", 1, target, 0, 0, 0);
+                rError("io::read truncated record in initial point file");
             }
             if (fscanf(fpData, "%*[^0-9+-]%d", &i) <= 0) {
-                break;
+                reportTruncatedRecord("SDPA initial point file", "target", 2, target, l, 0, 0);
+                rError("io::read truncated record in initial point file");
             }
             if (fscanf(fpData, "%*[^0-9+-]%d", &j) <= 0) {
-                break;
+                reportTruncatedRecord("SDPA initial point file", "target", 3, target, l, i, 0);
+                rError("io::read truncated record in initial point file");
             }
-            if (gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &value) <= 0) {
-                break;
+            if (readReal(fpData, value) <= 0) {
+                reportTruncatedRecord("SDPA initial point file", "target", 4, target, l, i, j);
+                rError("io::read truncated record in initial point file");
             }
 #if 0
       rMessage("target = " << target
@@ -192,6 +257,10 @@ void IO::read(FILE *fpData, DenseLinearSpace &xMat, Vector &yVec, DenseLinearSpa
 	       << ": value " <<value);
 #endif
 
+            if (target != 1 && target != 2) {
+                fprintf(stderr, "SDPA initial point file: target out of range [1,2] in record (target=%d, l=%d, i=%d, j=%d)\n", target, l, i, j);
+                rError("io::read invalid target in initial point file");
+            }
             if (l < 1) {
                 fprintf(stderr, "SDPA initial point file: block index out of range in record (target=%d, l=%d, i=%d, j=%d)\n", target, l, i, j);
                 rError("io::read invalid block index in initial point file");
@@ -237,7 +306,7 @@ void IO::read(FILE *fpData, DenseLinearSpace &xMat, Vector &yVec, DenseLinearSpa
             for (int i = 0; i < size; ++i) {
                 for (int j = 0; j < size; ++j) {
                     mpf_class tmp;
-                    gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                    requireReal(fpData, tmp, "the dense initial point file's dual matrix (target, block, row, column)", 1, l + 1, i + 1, j + 1);
                     if (i <= j && tmp != 0.0) {
                         zMat.setElement_SDP(l, i, j, tmp);
                     }
@@ -251,7 +320,7 @@ void IO::read(FILE *fpData, DenseLinearSpace &xMat, Vector &yVec, DenseLinearSpa
         // for LP
         for (int j = 0; j < LP_nBlock; ++j) {
             mpf_class tmp;
-            gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+            requireReal(fpData, tmp, "the dense initial point file's dual LP block", j + 1, LP_nBlock);
             if (tmp != 0.0) {
                 zMat.setElement_LP(j, tmp);
             }
@@ -263,7 +332,7 @@ void IO::read(FILE *fpData, DenseLinearSpace &xMat, Vector &yVec, DenseLinearSpa
             for (int i = 0; i < size; ++i) {
                 for (int j = 0; j < size; ++j) {
                     mpf_class tmp;
-                    gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                    requireReal(fpData, tmp, "the dense initial point file's primal matrix (target, block, row, column)", 2, l + 1, i + 1, j + 1);
                     if (i <= j && tmp != 0.0) {
                         xMat.setElement_SDP(l, i, j, tmp);
                     }
@@ -277,7 +346,7 @@ void IO::read(FILE *fpData, DenseLinearSpace &xMat, Vector &yVec, DenseLinearSpa
         // for LP
         for (int j = 0; j < LP_nBlock; ++j) {
             mpf_class tmp;
-            gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+            requireReal(fpData, tmp, "the dense initial point file's primal LP block", j + 1, LP_nBlock);
             if (tmp != 0.0) {
                 xMat.setElement_LP(j, tmp);
             }
@@ -300,19 +369,23 @@ void IO::read(FILE *fpData, InputData &inputData, int m, int SDP_nBlock, int *SD
         mpf_class value;
         while (true) {
             if (fscanf(fpData, "%*[^0-9+-]%d", &k) <= 0) {
-                break;
+                break; // no further record: this is the end of the data
             }
             if (fscanf(fpData, "%*[^0-9+-]%d", &l) <= 0) {
-                break;
+                reportTruncatedRecord("SDPA sparse data file", "matrix", 1, k, 0, 0, 0);
+                rError("io::read truncated record in input data");
             }
             if (fscanf(fpData, "%*[^0-9+-]%d", &i) <= 0) {
-                break;
+                reportTruncatedRecord("SDPA sparse data file", "matrix", 2, k, l, 0, 0);
+                rError("io::read truncated record in input data");
             }
             if (fscanf(fpData, "%*[^0-9+-]%d", &j) <= 0) {
-                break;
+                reportTruncatedRecord("SDPA sparse data file", "matrix", 3, k, l, i, 0);
+                rError("io::read truncated record in input data");
             }
-            if (gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &value) <= 0) {
-                break;
+            if (readReal(fpData, value) <= 0) {
+                reportTruncatedRecord("SDPA sparse data file", "matrix", 4, k, l, i, j);
+                rError("io::read truncated record in input data");
             }
 #if 0
       rMessage("input k:" << k <<
@@ -359,7 +432,7 @@ void IO::read(FILE *fpData, InputData &inputData, int m, int SDP_nBlock, int *SD
                 for (int i = 0; i < size; ++i) {
                     for (int j = 0; j < size; ++j) {
                         mpf_class tmp;
-                        gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                        requireReal(fpData, tmp, "the dense data file's C matrix (matrix, block, row, column)", 0, l2 + 1, i + 1, j + 1);
                         if (i <= j && tmp != 0.0) {
                             inputData.C.setElement_SDP(l, i, j, -tmp);
                         }
@@ -370,7 +443,7 @@ void IO::read(FILE *fpData, InputData &inputData, int m, int SDP_nBlock, int *SD
             } else if (blockType[l2] == 3) { // LP part
                 for (int j = 0; j < blockStruct[l2]; ++j) {
                     mpf_class tmp;
-                    gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                    requireReal(fpData, tmp, "the dense data file's C matrix (matrix, block, row, column)", 0, l2 + 1, j + 1, j + 1);
                     if (tmp != 0.0) {
                         inputData.C.setElement_LP(blockNumber[l2] + j, -tmp);
                     }
@@ -390,7 +463,7 @@ void IO::read(FILE *fpData, InputData &inputData, int m, int SDP_nBlock, int *SD
                     for (int i = 0; i < size; ++i) {
                         for (int j = 0; j < size; ++j) {
                             mpf_class tmp;
-                            gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                            requireReal(fpData, tmp, "the dense data file's A matrix (matrix, block, row, column)", k + 1, l2 + 1, i + 1, j + 1);
                             if (i <= j && tmp != 0.0) {
                                 inputData.A[k].setElement_SDP(l, i, j, tmp);
                             }
@@ -401,7 +474,7 @@ void IO::read(FILE *fpData, InputData &inputData, int m, int SDP_nBlock, int *SD
                 } else if (blockType[l2] == 3) { // LP part
                     for (int j = 0; j < blockStruct[l2]; ++j) {
                         mpf_class tmp;
-                        gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                        requireReal(fpData, tmp, "the dense data file's A matrix (matrix, block, row, column)", k + 1, l2 + 1, j + 1, j + 1);
                         if (tmp != 0.0) {
                             inputData.A[k].setElement_LP(blockNumber[l2] + j, tmp);
                         }
@@ -471,19 +544,23 @@ void IO::setBlockStruct(FILE *fpData, InputData &inputData, int m, int SDP_nBloc
         mpf_class value;
         while (true) {
             if (fscanf(fpData, "%*[^0-9+-]%d", &k) <= 0) {
-                break;
+                break; // no further record: this is the end of the data
             }
             if (fscanf(fpData, "%*[^0-9+-]%d", &l) <= 0) {
-                break;
+                reportTruncatedRecord("SDPA sparse data file", "matrix", 1, k, 0, 0, 0);
+                rError("io::read truncated record in input data");
             }
             if (fscanf(fpData, "%*[^0-9+-]%d", &i) <= 0) {
-                break;
+                reportTruncatedRecord("SDPA sparse data file", "matrix", 2, k, l, 0, 0);
+                rError("io::read truncated record in input data");
             }
             if (fscanf(fpData, "%*[^0-9+-]%d", &j) <= 0) {
-                break;
+                reportTruncatedRecord("SDPA sparse data file", "matrix", 3, k, l, i, 0);
+                rError("io::read truncated record in input data");
             }
-            if (gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &value) <= 0) {
-                break;
+            if (readReal(fpData, value) <= 0) {
+                reportTruncatedRecord("SDPA sparse data file", "matrix", 4, k, l, i, j);
+                rError("io::read truncated record in input data");
             }
 
             if (k < 0 || k > m) {
@@ -530,7 +607,7 @@ void IO::setBlockStruct(FILE *fpData, InputData &inputData, int m, int SDP_nBloc
                 for (int i = 0; i < size; ++i) {
                     for (int j = 0; j < size; ++j) {
                         mpf_class tmp;
-                        gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                        requireReal(fpData, tmp, "the dense data file's C matrix (matrix, block, row, column)", 0, l2 + 1, i + 1, j + 1);
                         if (i <= j && tmp != 0.0) {
                             SDP_index[0].push_back(l);
                         }
@@ -541,7 +618,7 @@ void IO::setBlockStruct(FILE *fpData, InputData &inputData, int m, int SDP_nBloc
             } else if (blockType[l2] == 3) { // LP part
                 for (int j = 0; j < blockStruct[l2]; ++j) {
                     mpf_class tmp;
-                    gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                    requireReal(fpData, tmp, "the dense data file's C matrix (matrix, block, row, column)", 0, l2 + 1, j + 1, j + 1);
                     if (tmp != 0.0) {
                         LP_index[0].push_back(blockNumber[l2] + j);
                     }
@@ -560,7 +637,7 @@ void IO::setBlockStruct(FILE *fpData, InputData &inputData, int m, int SDP_nBloc
                     for (int i = 0; i < size; ++i) {
                         for (int j = 0; j < size; ++j) {
                             mpf_class tmp;
-                            gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                            requireReal(fpData, tmp, "the dense data file's A matrix (matrix, block, row, column)", k + 1, l2 + 1, i + 1, j + 1);
                             if (i <= j && tmp != 0.0) {
                                 SDP_index[k + 1].push_back(l);
                             }
@@ -571,7 +648,7 @@ void IO::setBlockStruct(FILE *fpData, InputData &inputData, int m, int SDP_nBloc
                 } else if (blockType[l2] == 3) { // LP part
                     for (int j = 0; j < blockStruct[l2]; ++j) {
                         mpf_class tmp;
-                        gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                        requireReal(fpData, tmp, "the dense data file's A matrix (matrix, block, row, column)", k + 1, l2 + 1, j + 1, j + 1);
                         if (tmp != 0.0) {
                             LP_index[k + 1].push_back(blockNumber[l2] + j);
                         }
@@ -659,19 +736,23 @@ void IO::setElement(FILE *fpData, InputData &inputData, int m, int SDP_nBlock, i
         mpf_class value;
         while (true) {
             if (fscanf(fpData, "%*[^0-9+-]%d", &k) <= 0) {
-                break;
+                break; // no further record: this is the end of the data
             }
             if (fscanf(fpData, "%*[^0-9+-]%d", &l) <= 0) {
-                break;
+                reportTruncatedRecord("SDPA sparse data file", "matrix", 1, k, 0, 0, 0);
+                rError("io::read truncated record in input data");
             }
             if (fscanf(fpData, "%*[^0-9+-]%d", &i) <= 0) {
-                break;
+                reportTruncatedRecord("SDPA sparse data file", "matrix", 2, k, l, 0, 0);
+                rError("io::read truncated record in input data");
             }
             if (fscanf(fpData, "%*[^0-9+-]%d", &j) <= 0) {
-                break;
+                reportTruncatedRecord("SDPA sparse data file", "matrix", 3, k, l, i, 0);
+                rError("io::read truncated record in input data");
             }
-            if (gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &value) <= 0) {
-                break;
+            if (readReal(fpData, value) <= 0) {
+                reportTruncatedRecord("SDPA sparse data file", "matrix", 4, k, l, i, j);
+                rError("io::read truncated record in input data");
             }
 #if 0
       rMessage("input k:" << k <<
@@ -731,7 +812,7 @@ void IO::setElement(FILE *fpData, InputData &inputData, int m, int SDP_nBlock, i
                 for (int i = 0; i < size; ++i) {
                     for (int j = 0; j < size; ++j) {
                         mpf_class tmp;
-                        gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                        requireReal(fpData, tmp, "the dense data file's C matrix (matrix, block, row, column)", 0, l2 + 1, i + 1, j + 1);
                         if (i <= j && tmp != 0.0) {
                             inputData.C.setElement_SDP(l, i, j, -tmp);
                         }
@@ -742,7 +823,7 @@ void IO::setElement(FILE *fpData, InputData &inputData, int m, int SDP_nBlock, i
             } else if (blockType[l2] == 3) { // LP part
                 for (int j = 0; j < blockStruct[l2]; ++j) {
                     mpf_class tmp;
-                    gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                    requireReal(fpData, tmp, "the dense data file's C matrix (matrix, block, row, column)", 0, l2 + 1, j + 1, j + 1);
                     if (tmp != 0.0) {
                         inputData.C.setElement_LP(blockNumber[l2] + j, -tmp);
                     }
@@ -762,7 +843,7 @@ void IO::setElement(FILE *fpData, InputData &inputData, int m, int SDP_nBlock, i
                     for (int i = 0; i < size; ++i) {
                         for (int j = 0; j < size; ++j) {
                             mpf_class tmp;
-                            gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                            requireReal(fpData, tmp, "the dense data file's A matrix (matrix, block, row, column)", k + 1, l2 + 1, i + 1, j + 1);
                             if (i <= j && tmp != 0.0) {
                                 inputData.A[k].setElement_SDP(l, i, j, tmp);
                             }
@@ -773,7 +854,7 @@ void IO::setElement(FILE *fpData, InputData &inputData, int m, int SDP_nBlock, i
                 } else if (blockType[l2] == 3) { // LP part
                     for (int j = 0; j < blockStruct[l2]; ++j) {
                         mpf_class tmp;
-                        gmp_fscanf(fpData, "%*[^0-9+-]%Fe", &tmp);
+                        requireReal(fpData, tmp, "the dense data file's A matrix (matrix, block, row, column)", k + 1, l2 + 1, j + 1, j + 1);
                         if (tmp != 0.0) {
                             inputData.A[k].setElement_LP(blockNumber[l2] + j, tmp);
                         }
