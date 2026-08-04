@@ -26,6 +26,7 @@
  *
  */
 
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-08-03: per-flop gmpxx heap temporary (__gmp_temp = mpf_init2+mpf_clear) removed by accumulating through a function-scope product_scratch scratch. Bit-neutral only while every mpf_class shares one precision (verified: this fork has no explicit-precision construction). See git log. */
 #include <mpblas_gmp.h>
 
 void Rgemv(const char *trans, mplapackint const m, mplapackint const n, mpf_class const alpha, mpf_class *a, mplapackint const lda, mpf_class *x, mplapackint const incx, mpf_class const beta, mpf_class *y, mplapackint const incy) {
@@ -145,6 +146,7 @@ void Rgemv(const char *trans, mplapackint const m, mplapackint const n, mpf_clas
     mplapackint jx = 0;
     mplapackint j = 0;
     mpf_class temp = 0.0;
+    mpf_class product_scratch; // scratch for the product; keeps the accumulate off the heap
     mplapackint jy = 0;
     mplapackint ix = 0;
     if (Mlsame_gmp(trans, "N")) {
@@ -156,7 +158,9 @@ void Rgemv(const char *trans, mplapackint const m, mplapackint const n, mpf_clas
             for (j = 1; j <= n; j = j + 1) {
                 temp = alpha * x[jx - 1];
                 for (i = 1; i <= m; i = i + 1) {
-                    y[i - 1] += temp * a[(i - 1) + (j - 1) * lda];
+                    product_scratch = temp;
+                    product_scratch *= a[(i - 1) + (j - 1) * lda];
+                    y[i - 1] += product_scratch;
                 }
                 jx += incx;
             }
@@ -165,7 +169,9 @@ void Rgemv(const char *trans, mplapackint const m, mplapackint const n, mpf_clas
                 temp = alpha * x[jx - 1];
                 iy = ky;
                 for (i = 1; i <= m; i = i + 1) {
-                    y[iy - 1] += temp * a[(i - 1) + (j - 1) * lda];
+                    product_scratch = temp;
+                    product_scratch *= a[(i - 1) + (j - 1) * lda];
+                    y[iy - 1] += product_scratch;
                     iy += incy;
                 }
                 jx += incx;
@@ -180,9 +186,13 @@ void Rgemv(const char *trans, mplapackint const m, mplapackint const n, mpf_clas
             for (j = 1; j <= n; j = j + 1) {
                 temp = zero;
                 for (i = 1; i <= m; i = i + 1) {
-                    temp += a[(i - 1) + (j - 1) * lda] * x[i - 1];
+                    product_scratch = a[(i - 1) + (j - 1) * lda];
+                    product_scratch *= x[i - 1];
+                    temp += product_scratch;
                 }
-                y[jy - 1] += alpha * temp;
+                product_scratch = alpha;
+                product_scratch *= temp;
+                y[jy - 1] += product_scratch;
                 jy += incy;
             }
         } else {
@@ -190,10 +200,14 @@ void Rgemv(const char *trans, mplapackint const m, mplapackint const n, mpf_clas
                 temp = zero;
                 ix = kx;
                 for (i = 1; i <= m; i = i + 1) {
-                    temp += a[(i - 1) + (j - 1) * lda] * x[ix - 1];
+                    product_scratch = a[(i - 1) + (j - 1) * lda];
+                    product_scratch *= x[ix - 1];
+                    temp += product_scratch;
                     ix += incx;
                 }
-                y[jy - 1] += alpha * temp;
+                product_scratch = alpha;
+                product_scratch *= temp;
+                y[jy - 1] += product_scratch;
                 jy += incy;
             }
         }

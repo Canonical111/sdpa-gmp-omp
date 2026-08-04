@@ -27,12 +27,14 @@
  * SUCH DAMAGE.
  *
  */
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-08-03: per-flop gmpxx heap temporary (__gmp_temp = mpf_init2+mpf_clear) removed by accumulating through a function-scope product_scratch scratch. Bit-neutral only while every mpf_class shares one precision (verified: this fork has no explicit-precision construction). If the commented-out private(i,j,l,temp) pragma below is re-enabled, product_scratch MUST be added to the private list or it becomes shared and racy. See git log. */
 #include <mpblas_gmp.h>
 
 void Rgemm_TN_omp(mplapackint m, mplapackint n, mplapackint k, mpf_class alpha, mpf_class *A, mplapackint lda, mpf_class *B, mplapackint ldb, mpf_class beta, mpf_class *C, mplapackint ldc) {
     // Form  C := alpha*A'*B + beta*C.
     mplapackint i, j, l;
     mpf_class temp;
+    mpf_class product_scratch; // scratch for the product; keeps the accumulate off the heap
     for (j = 0; j < n; j++) {
         if (beta == 0.0) {
             for (i = 0; i < m; i++) {
@@ -52,9 +54,13 @@ void Rgemm_TN_omp(mplapackint m, mplapackint n, mplapackint k, mpf_class alpha, 
         for (i = 0; i < m; i++) {
             temp = 0.0;
             for (l = 0; l < k; l++) {
-                temp += A[l + i * lda] * B[l + j * ldb];
+                product_scratch = A[l + i * lda];
+                product_scratch *= B[l + j * ldb];
+                temp += product_scratch;
             }
-            C[i + j * ldc] += alpha * temp;
+            product_scratch = alpha;
+            product_scratch *= temp;
+            C[i + j * ldc] += product_scratch;
         }
     }
     return;

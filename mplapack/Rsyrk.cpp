@@ -26,6 +26,7 @@
  *
  */
 
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-08-03: per-flop gmpxx heap temporary (__gmp_temp = mpf_init2+mpf_clear) removed by accumulating through a function-scope product_scratch scratch. Bit-neutral only while every mpf_class shares one precision (verified: this fork has no explicit-precision construction). See git log. */
 #include <mpblas_gmp.h>
 
 void Rsyrk(const char *uplo, const char *trans, mplapackint const n, mplapackint const k, mpf_class const alpha, mpf_class *a, mplapackint const lda, mpf_class const beta, mpf_class *c, mplapackint const ldc) {
@@ -130,6 +131,7 @@ void Rsyrk(const char *uplo, const char *trans, mplapackint const n, mplapackint
     //
     mplapackint l = 0;
     mpf_class temp = 0.0;
+    mpf_class product_scratch; // scratch for the product; keeps the accumulate off the heap
     if (Mlsame_gmp(trans, "N")) {
         //
         //        Form  C := alpha*A*A**T + beta*C.
@@ -149,7 +151,9 @@ void Rsyrk(const char *uplo, const char *trans, mplapackint const n, mplapackint
                     if (a[(j - 1) + (l - 1) * lda] != zero) {
                         temp = alpha * a[(j - 1) + (l - 1) * lda];
                         for (i = 1; i <= j; i = i + 1) {
-                            c[(i - 1) + (j - 1) * ldc] += temp * a[(i - 1) + (l - 1) * lda];
+                            product_scratch = temp;
+                            product_scratch *= a[(i - 1) + (l - 1) * lda];
+                            c[(i - 1) + (j - 1) * ldc] += product_scratch;
                         }
                     }
                 }
@@ -169,7 +173,9 @@ void Rsyrk(const char *uplo, const char *trans, mplapackint const n, mplapackint
                     if (a[(j - 1) + (l - 1) * lda] != zero) {
                         temp = alpha * a[(j - 1) + (l - 1) * lda];
                         for (i = j; i <= n; i = i + 1) {
-                            c[(i - 1) + (j - 1) * ldc] += temp * a[(i - 1) + (l - 1) * lda];
+                            product_scratch = temp;
+                            product_scratch *= a[(i - 1) + (l - 1) * lda];
+                            c[(i - 1) + (j - 1) * ldc] += product_scratch;
                         }
                     }
                 }
@@ -184,7 +190,9 @@ void Rsyrk(const char *uplo, const char *trans, mplapackint const n, mplapackint
                 for (i = 1; i <= j; i = i + 1) {
                     temp = zero;
                     for (l = 1; l <= k; l = l + 1) {
-                        temp += a[(l - 1) + (i - 1) * lda] * a[(l - 1) + (j - 1) * lda];
+                        product_scratch = a[(l - 1) + (i - 1) * lda];
+                        product_scratch *= a[(l - 1) + (j - 1) * lda];
+                        temp += product_scratch;
                     }
                     if (beta == zero) {
                         c[(i - 1) + (j - 1) * ldc] = alpha * temp;
@@ -198,7 +206,9 @@ void Rsyrk(const char *uplo, const char *trans, mplapackint const n, mplapackint
                 for (i = j; i <= n; i = i + 1) {
                     temp = zero;
                     for (l = 1; l <= k; l = l + 1) {
-                        temp += a[(l - 1) + (i - 1) * lda] * a[(l - 1) + (j - 1) * lda];
+                        product_scratch = a[(l - 1) + (i - 1) * lda];
+                        product_scratch *= a[(l - 1) + (j - 1) * lda];
+                        temp += product_scratch;
                     }
                     if (beta == zero) {
                         c[(i - 1) + (j - 1) * ldc] = alpha * temp;

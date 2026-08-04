@@ -29,6 +29,7 @@
  */
 
 /* MODIFIED from upstream (GPLv2 2a notice), 2026-07-31: zero-skip restored; OpenMP gated on work, width and nesting. See git log. */
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-08-03: inner accumulate uses mpf_mul(templ, temp, A) directly, dropping one redundant mpf_set per flop. Bit-neutral: the dropped mpf_set was exact at equal precision. See git log. */
 #include <mpblas_gmp.h>
 #include "mplapack_omp_tuning.h"
 #ifdef _OPENMP
@@ -68,8 +69,7 @@ void Rgemm_NN_omp(mplapackint m, mplapackint n, mplapackint k, mpf_class alpha, 
                 temp = alpha;
                 temp *= B[l + j * ldb];
                 for (i = 0; i < m; i++) {
-                    templ = temp;
-                    templ *= A[i + l * lda];
+                    mpf_mul(templ.get_mpf_t(), temp.get_mpf_t(), A[i + l * lda].get_mpf_t());
                     C[i + j * ldc] += templ;
                 }
             }

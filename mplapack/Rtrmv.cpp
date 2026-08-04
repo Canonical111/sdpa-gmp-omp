@@ -26,6 +26,7 @@
  *
  */
 
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-08-03: per-flop gmpxx heap temporary (__gmp_temp = mpf_init2+mpf_clear) removed by accumulating through a function-scope product_scratch scratch. Bit-neutral only while every mpf_class shares one precision (verified: this fork has no explicit-precision construction). See git log. */
 #include <mpblas_gmp.h>
 
 void Rtrmv(const char *uplo, const char *trans, const char *diag, mplapackint const n, mpf_class *a, mplapackint const lda, mpf_class *x, mplapackint const incx) {
@@ -97,6 +98,7 @@ void Rtrmv(const char *uplo, const char *trans, const char *diag, mplapackint co
     mplapackint j = 0;
     const mpf_class zero = 0.0;
     mpf_class temp = 0.0;
+    mpf_class product_scratch; // scratch for the product; keeps the accumulate off the heap
     mplapackint i = 0;
     mplapackint jx = 0;
     mplapackint ix = 0;
@@ -110,7 +112,9 @@ void Rtrmv(const char *uplo, const char *trans, const char *diag, mplapackint co
                     if (x[j - 1] != zero) {
                         temp = x[j - 1];
                         for (i = 1; i <= j - 1; i = i + 1) {
-                            x[i - 1] += temp * a[(i - 1) + (j - 1) * lda];
+                            product_scratch = temp;
+                            product_scratch *= a[(i - 1) + (j - 1) * lda];
+                            x[i - 1] += product_scratch;
                         }
                         if (nounit) {
                             x[j - 1] = x[j - 1] * a[(j - 1) + (j - 1) * lda];
@@ -124,7 +128,9 @@ void Rtrmv(const char *uplo, const char *trans, const char *diag, mplapackint co
                         temp = x[jx - 1];
                         ix = kx;
                         for (i = 1; i <= j - 1; i = i + 1) {
-                            x[ix - 1] += temp * a[(i - 1) + (j - 1) * lda];
+                            product_scratch = temp;
+                            product_scratch *= a[(i - 1) + (j - 1) * lda];
+                            x[ix - 1] += product_scratch;
                             ix += incx;
                         }
                         if (nounit) {
@@ -140,7 +146,9 @@ void Rtrmv(const char *uplo, const char *trans, const char *diag, mplapackint co
                     if (x[j - 1] != zero) {
                         temp = x[j - 1];
                         for (i = n; i >= j + 1; i = i - 1) {
-                            x[i - 1] += temp * a[(i - 1) + (j - 1) * lda];
+                            product_scratch = temp;
+                            product_scratch *= a[(i - 1) + (j - 1) * lda];
+                            x[i - 1] += product_scratch;
                         }
                         if (nounit) {
                             x[j - 1] = x[j - 1] * a[(j - 1) + (j - 1) * lda];
@@ -155,7 +163,9 @@ void Rtrmv(const char *uplo, const char *trans, const char *diag, mplapackint co
                         temp = x[jx - 1];
                         ix = kx;
                         for (i = n; i >= j + 1; i = i - 1) {
-                            x[ix - 1] += temp * a[(i - 1) + (j - 1) * lda];
+                            product_scratch = temp;
+                            product_scratch *= a[(i - 1) + (j - 1) * lda];
+                            x[ix - 1] += product_scratch;
                             ix = ix - incx;
                         }
                         if (nounit) {
@@ -178,7 +188,9 @@ void Rtrmv(const char *uplo, const char *trans, const char *diag, mplapackint co
                         temp = temp * a[(j - 1) + (j - 1) * lda];
                     }
                     for (i = j - 1; i >= 1; i = i - 1) {
-                        temp += a[(i - 1) + (j - 1) * lda] * x[i - 1];
+                        product_scratch = a[(i - 1) + (j - 1) * lda];
+                        product_scratch *= x[i - 1];
+                        temp += product_scratch;
                     }
                     x[j - 1] = temp;
                 }
@@ -192,7 +204,9 @@ void Rtrmv(const char *uplo, const char *trans, const char *diag, mplapackint co
                     }
                     for (i = j - 1; i >= 1; i = i - 1) {
                         ix = ix - incx;
-                        temp += a[(i - 1) + (j - 1) * lda] * x[ix - 1];
+                        product_scratch = a[(i - 1) + (j - 1) * lda];
+                        product_scratch *= x[ix - 1];
+                        temp += product_scratch;
                     }
                     x[jx - 1] = temp;
                     jx = jx - incx;
@@ -206,7 +220,9 @@ void Rtrmv(const char *uplo, const char *trans, const char *diag, mplapackint co
                         temp = temp * a[(j - 1) + (j - 1) * lda];
                     }
                     for (i = j + 1; i <= n; i = i + 1) {
-                        temp += a[(i - 1) + (j - 1) * lda] * x[i - 1];
+                        product_scratch = a[(i - 1) + (j - 1) * lda];
+                        product_scratch *= x[i - 1];
+                        temp += product_scratch;
                     }
                     x[j - 1] = temp;
                 }
@@ -220,7 +236,9 @@ void Rtrmv(const char *uplo, const char *trans, const char *diag, mplapackint co
                     }
                     for (i = j + 1; i <= n; i = i + 1) {
                         ix += incx;
-                        temp += a[(i - 1) + (j - 1) * lda] * x[ix - 1];
+                        product_scratch = a[(i - 1) + (j - 1) * lda];
+                        product_scratch *= x[ix - 1];
+                        temp += product_scratch;
                     }
                     x[jx - 1] = temp;
                     jx += incx;

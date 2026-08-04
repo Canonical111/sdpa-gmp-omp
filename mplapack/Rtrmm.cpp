@@ -26,6 +26,8 @@
  *
  */
 
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-08-03: zero-skip added to the A**T*B dot-product accumulate (not present in netlib dtrmm). See git log. */
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-08-03: per-flop gmpxx heap temporary (__gmp_temp = mpf_init2+mpf_clear) removed by accumulating through a function-scope product_scratch scratch. Bit-neutral only while every mpf_class shares one precision (verified: this fork has no explicit-precision construction). See git log. */
 #include <mpblas_gmp.h>
 
 void Rtrmm(const char *side, const char *uplo, const char *transa, const char *diag, mplapackint const m, mplapackint const n, mpf_class const alpha, mpf_class *a, mplapackint const lda, mpf_class *b, mplapackint const ldb) {
@@ -111,6 +113,7 @@ void Rtrmm(const char *side, const char *uplo, const char *transa, const char *d
     //
     mplapackint k = 0;
     mpf_class temp = 0.0;
+    mpf_class product_scratch; // scratch for the product; keeps the accumulate off the heap
     const mpf_class one = 1.0;
     if (lside) {
         if (Mlsame_gmp(transa, "N")) {
@@ -123,7 +126,9 @@ void Rtrmm(const char *side, const char *uplo, const char *transa, const char *d
                         if (b[(k - 1) + (j - 1) * ldb] != zero) {
                             temp = alpha * b[(k - 1) + (j - 1) * ldb];
                             for (i = 1; i <= k - 1; i = i + 1) {
-                                b[(i - 1) + (j - 1) * ldb] += temp * a[(i - 1) + (k - 1) * lda];
+                                product_scratch = temp;
+                                product_scratch *= a[(i - 1) + (k - 1) * lda];
+                                b[(i - 1) + (j - 1) * ldb] += product_scratch;
                             }
                             if (nounit) {
                                 temp = temp * a[(k - 1) + (k - 1) * lda];
@@ -142,7 +147,9 @@ void Rtrmm(const char *side, const char *uplo, const char *transa, const char *d
                                 b[(k - 1) + (j - 1) * ldb] = b[(k - 1) + (j - 1) * ldb] * a[(k - 1) + (k - 1) * lda];
                             }
                             for (i = k + 1; i <= m; i = i + 1) {
-                                b[(i - 1) + (j - 1) * ldb] += temp * a[(i - 1) + (k - 1) * lda];
+                                product_scratch = temp;
+                                product_scratch *= a[(i - 1) + (k - 1) * lda];
+                                b[(i - 1) + (j - 1) * ldb] += product_scratch;
                             }
                         }
                     }
@@ -160,7 +167,11 @@ void Rtrmm(const char *side, const char *uplo, const char *transa, const char *d
                             temp = temp * a[(i - 1) + (i - 1) * lda];
                         }
                         for (k = 1; k <= i - 1; k = k + 1) {
-                            temp += a[(k - 1) + (i - 1) * lda] * b[(k - 1) + (j - 1) * ldb];
+                            if (b[(k - 1) + (j - 1) * ldb] != zero) {
+                                product_scratch = a[(k - 1) + (i - 1) * lda];
+                                product_scratch *= b[(k - 1) + (j - 1) * ldb];
+                                temp += product_scratch;
+                            }
                         }
                         b[(i - 1) + (j - 1) * ldb] = alpha * temp;
                     }
@@ -173,7 +184,11 @@ void Rtrmm(const char *side, const char *uplo, const char *transa, const char *d
                             temp = temp * a[(i - 1) + (i - 1) * lda];
                         }
                         for (k = i + 1; k <= m; k = k + 1) {
-                            temp += a[(k - 1) + (i - 1) * lda] * b[(k - 1) + (j - 1) * ldb];
+                            if (b[(k - 1) + (j - 1) * ldb] != zero) {
+                                product_scratch = a[(k - 1) + (i - 1) * lda];
+                                product_scratch *= b[(k - 1) + (j - 1) * ldb];
+                                temp += product_scratch;
+                            }
                         }
                         b[(i - 1) + (j - 1) * ldb] = alpha * temp;
                     }
@@ -198,7 +213,9 @@ void Rtrmm(const char *side, const char *uplo, const char *transa, const char *d
                         if (a[(k - 1) + (j - 1) * lda] != zero) {
                             temp = alpha * a[(k - 1) + (j - 1) * lda];
                             for (i = 1; i <= m; i = i + 1) {
-                                b[(i - 1) + (j - 1) * ldb] += temp * b[(i - 1) + (k - 1) * ldb];
+                                product_scratch = temp;
+                                product_scratch *= b[(i - 1) + (k - 1) * ldb];
+                                b[(i - 1) + (j - 1) * ldb] += product_scratch;
                             }
                         }
                     }
@@ -216,7 +233,9 @@ void Rtrmm(const char *side, const char *uplo, const char *transa, const char *d
                         if (a[(k - 1) + (j - 1) * lda] != zero) {
                             temp = alpha * a[(k - 1) + (j - 1) * lda];
                             for (i = 1; i <= m; i = i + 1) {
-                                b[(i - 1) + (j - 1) * ldb] += temp * b[(i - 1) + (k - 1) * ldb];
+                                product_scratch = temp;
+                                product_scratch *= b[(i - 1) + (k - 1) * ldb];
+                                b[(i - 1) + (j - 1) * ldb] += product_scratch;
                             }
                         }
                     }
@@ -232,7 +251,9 @@ void Rtrmm(const char *side, const char *uplo, const char *transa, const char *d
                         if (a[(j - 1) + (k - 1) * lda] != zero) {
                             temp = alpha * a[(j - 1) + (k - 1) * lda];
                             for (i = 1; i <= m; i = i + 1) {
-                                b[(i - 1) + (j - 1) * ldb] += temp * b[(i - 1) + (k - 1) * ldb];
+                                product_scratch = temp;
+                                product_scratch *= b[(i - 1) + (k - 1) * ldb];
+                                b[(i - 1) + (j - 1) * ldb] += product_scratch;
                             }
                         }
                     }
@@ -252,7 +273,9 @@ void Rtrmm(const char *side, const char *uplo, const char *transa, const char *d
                         if (a[(j - 1) + (k - 1) * lda] != zero) {
                             temp = alpha * a[(j - 1) + (k - 1) * lda];
                             for (i = 1; i <= m; i = i + 1) {
-                                b[(i - 1) + (j - 1) * ldb] += temp * b[(i - 1) + (k - 1) * ldb];
+                                product_scratch = temp;
+                                product_scratch *= b[(i - 1) + (k - 1) * ldb];
+                                b[(i - 1) + (j - 1) * ldb] += product_scratch;
                             }
                         }
                     }
