@@ -30,7 +30,9 @@
 
 /* MODIFIED from upstream (GPLv2 2a notice), 2026-07-31: zero-skip restored for a future re-enable of its pragmas. See git log. */
 /* MODIFIED from upstream (GPLv2 2a notice), 2026-08-03: inner accumulate uses mpf_mul(templ, temp, A) directly, dropping one redundant mpf_set per flop. Bit-neutral: the dropped mpf_set was exact at equal precision. See git log. */
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-08-04: enable the main-loop OpenMP pragma (it shipped commented out, leaving Rpotrf's trailing update and hence the whole Schur Cholesky serial on this fork). See git log. */
 #include <mpblas_gmp.h>
+#include "mplapack_omp_tuning.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -62,7 +64,7 @@ void Rgemm_NT_omp(mplapackint m, mplapackint n, mplapackint k, mpf_class alpha, 
     // If beta is 1, no scaling is needed
 
     // Compute alpha * A * B' and add to C: C += alpha * A * B'
-    //#pragma omp parallel for private(j, l, i, temp, templ) schedule(static)
+    #pragma omp parallel for private(j, l, i, temp, templ) schedule(static) if ((double)m * (double)n * (double)k >= MPLAPACK_OMP_MIN_GEMM_WORK && n >= MPLAPACK_OMP_MIN_GEMM_WIDTH && !omp_in_parallel()) num_threads(omp_get_max_threads() < (int)n ? omp_get_max_threads() : (int)n)
     for (j = 0; j < n; j++) {
         for (l = 0; l < k; l++) {
             if (B[j + l * ldb] != 0.0) {
