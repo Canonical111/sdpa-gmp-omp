@@ -109,3 +109,79 @@ jobs:
           if diff -q t1.mutated t8.selected >/dev/null; then
             echo "FAIL: comparison cannot detect a changed matrix row" >&2; exit 1
           fi
+# Job C -- -ftrivial-auto-var-init=zero vs =pattern must give identical output.
+# This is the method that found the iMlaenv block-size bug. ASan cannot see an
+# in-bounds uninitialised stack read; this can.
+# Verified 2026-08-04 on pi (gcc 13.3.0) on all three forks at their dev tips.
+  auto-var-init:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y build-essential autoconf automake libtool
+      - name: compiler must support the flag at all
+        run: |
+          printf 'int main(){return 0;}\n' > /tmp/a.c
+          gcc -ftrivial-auto-var-init=pattern -c /tmp/a.c -o /tmp/a.o \
+            || { echo "FAIL: toolchain lacks -ftrivial-auto-var-init (needs GCC >= 12)" >&2; exit 1; }
+
+      - name: build twice, zero and pattern
+        run: |
+          set -e
+          build() {   # $1 = zero|pattern, $2 = destination dir
+            rm -rf "$2"; mkdir -p "$2"; tar -c --exclude=.git --exclude="$2" . | tar -x -C "$2"
+            ( cd "$2"
+              autoreconf -fi >/dev/null 2>&1 || true          # dd / gmp
+              ./configure --enable-openmp=yes >/dev/null      # qd: --with-qd-includedir=... --with-qd-libdir=...
+              F="-O2 -funroll-all-loops -ftrivial-auto-var-init=$1"
+              make -j"$(nproc)" CXXFLAGS="$F" CFLAGS="$F" > build.log 2>&1 || true
+              MK=$(find . -path '*spooles*' -name Make.inc | head -1)
+              if [ -n "$MK" ] && [ ! -x ./sdpa_gmp ]; then
+                sed -i 's|^# CC = gcc|  CC = gcc|' "$MK"; d=$(dirname "$MK")
+                ( cd "$d" && find . -name '*.o' -delete && rm -f spooles.a && make global -f makefile >/dev/null 2>&1 \
+                  && { cp spooles.a ../../../i/SPOOLES/lib/libspooles.a 2>/dev/null || cp spooles.a ./libspooles.a; } )
+                make -j"$(nproc)" CXXFLAGS="$F" CFLAGS="$F" >> build.log 2>&1
+              fi
+              # Flags MUST go on the make line. sdpa-gmp-omp's configure.ac does
+              # AC_SUBST([CXXFLAGS],[""]) and discards configure-time flags entirely;
+              # measured, that made this whole job vacuous on gmp (0 of 3671 compile
+              # lines carried the flag, yet the two binaries still differed because the
+              # build path is embedded -- so "binaries differ" is NOT a valid check).
+              c=$(grep -E ' -c ' build.log | grep -c -- '-ftrivial-auto-var-init' || true)
+              [ "${c:-0}" -ge 10 ] || { echo "FAIL: only $c compile lines carried the flag" >&2; exit 1; }
+              grep -E ' -c ' build.log | grep -- 'sdpa_newton.cpp' | grep -q -- '-ftrivial-auto-var-init' \
+                || { echo "FAIL: first-party TUs did not get the flag" >&2; exit 1; }
+            )
+          }
+          build zero    build-zero
+          build pattern build-pattern
+
+      - name: identical output, or an uninitialised read has been found
+        run: |
+          set -u
+          for p in SDPLIB/data/control1 SDPLIB/data/theta1 SDPLIB/data/truss5 SDPLIB/data/arch0 SDPLIB/data/gpp100 SDPLIB/data/mcp100; do
+            [ -f "$p.dat-s.xz" ] && xz -dkf "$p.dat-s.xz"
+          done
+          sel() {   # same selector as the committed determinism step
+            grep -E 'objValPrimal|objValDual|phase\.value|Iteration =|relative gap|feas\.error' "$1" || true
+            awk '/^xVec *=/{f=1} f && !/time *=/' "$1"
+          }
+          : > z.sel; : > p.sel
+          for d in example1 SDPLIB/data/control1 SDPLIB/data/theta1 SDPLIB/data/truss5 \
+                   SDPLIB/data/arch0 SDPLIB/data/gpp100 SDPLIB/data/mcp100; do
+            f="$d.dat-s"; [ -f "$f" ] || continue
+            OMP_NUM_THREADS=2 ./build-zero/sdpa_gmp    -ds "$f" -o zo.out -p param.sdpa >/dev/null 2>&1
+            OMP_NUM_THREADS=2 ./build-pattern/sdpa_gmp -ds "$f" -o po.out -p param.sdpa >/dev/null 2>&1
+            echo "== $f" >> z.sel; sel zo.out >> z.sel
+            echo "== $f" >> p.sel; sel po.out >> p.sel
+          done
+          test -s z.sel || { echo "FAIL: selector matched nothing" >&2; exit 1; }
+          grep -q '^  *{' z.sel || { echo "FAIL: no indented matrix rows captured" >&2; exit 1; }
+          # Positive control: a changed continuation row must be detectable.
+          awk 'BEGIN{d=0} /^[[:space:]]+\{/ && !d {print "  {9.99e+99"; d=1; next} {print}' z.sel > z.mut
+          diff -q z.sel z.mut >/dev/null && { echo "FAIL: control mutated nothing -- check is vacuous" >&2; exit 1; }
+          diff -q z.mut p.sel >/dev/null && { echo "FAIL: comparison cannot detect a changed row" >&2; exit 1; }
+          diff -u z.sel p.sel || {
+            echo "FAIL: zero and pattern disagree -- there is a live uninitialised read." >&2
+            echo "Bisect it: build everything =zero, then recompile subsets with =pattern" >&2
+            echo "until the answer moves; the subset that moves it holds the read." >&2
+            exit 1; }
