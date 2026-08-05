@@ -53,6 +53,21 @@ void Rsyr2(const char *uplo, mplapackint const n, mpf_class const alpha, mpf_cla
 void Rger(mplapackint const m, mplapackint const n, mpf_class const alpha, mpf_class *x, mplapackint const incx, mpf_class *y, mplapackint const incy, mpf_class *a, mplapackint const lda);
 void Rtrmm(const char *side, const char *uplo, const char *transa, const char *diag, mplapackint const m, mplapackint const n, mpf_class const alpha, mpf_class *a, mplapackint const lda, mpf_class *b, mplapackint const ldb);
 void Rtrsm(const char *side, const char *uplo, const char *transa, const char *diag, mplapackint const m, mplapackint const n, mpf_class const alpha, mpf_class *a, mplapackint const lda, mpf_class *b, mplapackint const ldb);
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-08-05: declared the two column-parallel
+   Left-side triangular kernels (the B3 port from sdpa-dd). See git log.
+   These are NOT drop-in replacements for Rtrmm/Rtrsm at every call site by policy: they exist
+   so that the Cholesky-inverse phase can be threaded WITHOUT also threading Rtrsm inside
+   Rpotrf/Rpotrf2's recursion or Rtrmm inside Rlarfb. Each parallelises only the one case it
+   implements and delegates every other case, and every sub-threshold call, to the serial
+   kernel; results are bit-identical to it at any thread count.
+   Permitted call sites, and only these:
+     Rtrsm_omp  Left/Lower/NoTranspose   Lal::getInvLowTriangularMatrix   (split over columns)
+     Rtrmm_omp  Left/Lower/Transpose     Jal::getInvCholAndInv            (split over columns)
+   The parallel axis is whichever axis is independent in the serial branch being replaced; for
+   side == "Right" it is the ROWS instead, and neither of these files implements Right. Do not
+   generalise them to other cases by analogy. */
+void Rtrmm_omp(const char *side, const char *uplo, const char *transa, const char *diag, mplapackint const m, mplapackint const n, mpf_class const alpha, mpf_class *a, mplapackint const lda, mpf_class *b, mplapackint const ldb);
+void Rtrsm_omp(const char *side, const char *uplo, const char *transa, const char *diag, mplapackint const m, mplapackint const n, mpf_class const alpha, mpf_class *a, mplapackint const lda, mpf_class *b, mplapackint const ldb);
 void Rgemm(const char *transa, const char *transb, mplapackint const m, mplapackint const n, mplapackint const k, mpf_class const alpha, mpf_class *a, mplapackint const lda, mpf_class *b, mplapackint const ldb, mpf_class const beta, mpf_class *c, mplapackint const ldc);
 void Rsyrk(const char *uplo, const char *trans, mplapackint const n, mplapackint const k, mpf_class const alpha, mpf_class *a, mplapackint const lda, mpf_class const beta, mpf_class *c, mplapackint const ldc);
 void Rsyr2k(const char *uplo, const char *trans, mplapackint const n, mplapackint const k, mpf_class const alpha, mpf_class *a, mplapackint const lda, mpf_class *b, mplapackint const ldb, mpf_class const beta, mpf_class *c, mplapackint const ldc);

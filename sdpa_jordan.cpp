@@ -159,7 +159,14 @@ bool Jal::getInvCholAndInv(DenseLinearSpace &invCholMat, DenseLinearSpace &inver
 
     for (int l = 0; l < aMat.SDP_nBlock; ++l) {
         inverseMat.SDP_block[l].copyFrom(invCholMat.SDP_block[l]);
-        Rtrmm("Left", "Lower", "Transpose", "NonUnitDiag", invCholMat.SDP_block[l].nRow, invCholMat.SDP_block[l].nCol, MONE, invCholMat.SDP_block[l].de_ele, invCholMat.SDP_block[l].nRow, inverseMat.SDP_block[l].de_ele, inverseMat.SDP_block[l].nRow);
+        /* MODIFIED from upstream (GPLv2 2a notice), 2026-08-05: Rtrmm -> Rtrmm_omp (B3, ported
+           from sdpa-dd). Forming Z^-1 = L**T * L is the other half of the Cholesky-inverse phase
+           and was entirely serial. Rtrmm_omp splits it over the columns of inverseMat, which
+           leaves the arithmetic of each column and its order untouched, so the result is
+           bit-identical to Rtrmm; it falls back to Rtrmm below its work gate and for any case
+           but Left/Lower/Transpose. Deliberately NOT done by threading Rtrmm itself, which would
+           also thread Rlarfb's 24 Right-side calls. See git log. */
+        Rtrmm_omp("Left", "Lower", "Transpose", "NonUnitDiag", invCholMat.SDP_block[l].nRow, invCholMat.SDP_block[l].nCol, MONE, invCholMat.SDP_block[l].de_ele, invCholMat.SDP_block[l].nRow, inverseMat.SDP_block[l].de_ele, inverseMat.SDP_block[l].nRow);
     }
     for (int l = 0; l < aMat.SOCP_nBlock; ++l) {
         rError("rNewton:: we don't make this ruoutin");
