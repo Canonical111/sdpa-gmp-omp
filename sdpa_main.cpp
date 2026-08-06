@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 ------------------------------------------------------------- */
 
 /* MODIFIED from upstream (GPLv2 2a notice), 2026-08-03: fatal parameter-file error exits non-zero; solver status propagated to exit code. See git log. */
+/* MODIFIED from upstream (GPLv2 2a notice), 2026-08-05: the residual is built once into currentRes; initRes keeps only the scalars the solve actually reads, so the second full copy is never allocated. See git log. */
 #ifndef _MAIN_
 #define _MAIN_
 #endif
@@ -261,9 +262,33 @@ bool pinpal(char *dataFile, char *initFile, char *outFile, char *paraFile, bool 
     // the end of file read
     // -------------------------------------------------------------
 
-    Residuals initRes(m, SDP_nBlock, SDP_blockStruct, SOCP_nBlock, SOCP_blockStruct, LP_nBlock, inputData, currentPt);
-    Residuals currentRes;
-    currentRes.copyFrom(initRes);
+    // 2026-08-05 ("C2"): never allocate the second copy of the residual at all.
+    //
+    // Upstream built the residual into `initRes`, copied the whole thing into
+    // `currentRes`, and then held BOTH for the entire solve. The arrays are
+    // primalVec (m elements) + dualMat (sum_l n_l^2 elements) per copy.
+    //
+    // initRes is NOT dead after the copy: it is still read by the RatioInitResCurrentRes
+    // ctor, by the Phase ctor, and by theta.update_exact() inside the main loop. But every
+    // one of those reads touches ONLY the scalars normPrimalVec / normDualMat, so initRes
+    // never needs its arrays at all. Build the residual straight into currentRes and keep
+    // an initRes that carries the scalars and nothing else: Residuals' default ctor leaves
+    // primalVec.ele and every dualMat block pointer NULL, so no array is ever allocated for
+    // it and ~Residuals()'s terminate() is a no-op on it.
+    //
+    // Bit-identical: currentRes now runs the same initialize()+compute() that initRes used
+    // to run on the same inputData/currentPt, instead of receiving an element-wise copy of
+    // that same result, and the three scalars are carried across verbatim.
+    //
+    // Shaped this way rather than as an `initRes.terminate()` after the copy because that
+    // was MEASURED (in the dd fork, same code shape) to save exactly nothing: initRes is the
+    // last large allocation before the main loop, so peak RSS is established AT the copy and
+    // a free placed after it cannot move a high-water mark already reached.
+    Residuals currentRes(m, SDP_nBlock, SDP_blockStruct, SOCP_nBlock, SOCP_blockStruct, LP_nBlock, inputData, currentPt);
+    Residuals initRes;
+    initRes.normPrimalVec = currentRes.normPrimalVec;
+    initRes.normDualMat = currentRes.normDualMat;
+    initRes.centerNorm = currentRes.centerNorm;
     // rMessage("initial currentRes = ");
     // currentRes.display(Display);
 

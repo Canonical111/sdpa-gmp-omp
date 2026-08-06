@@ -137,11 +137,77 @@ case "$host" in
         ;;
 esac
 LIBS="$LIBS $pthread_lib"
+CFLAGS="$CFLAGS $pthread_cflags"
 CXXFLAGS="$CXXFLAGS $pthread_cflags"
 AC_SUBST(pthread_lib)
+dnl 2026-08-05: pthread_cflags was referenced by Makefile.am (and by the SPOOLES
+dnl patch-Make.inc) but NEVER AC_SUBST'ed, so every `$(pthread_cflags)` in a generated
+dnl Makefile expanded to nothing. On Linux that dropped -D_REENTRANT twice over: once here,
+dnl where the AC_SUBST([CXXFLAGS],[""]) below threw away the line above it, and once in
+dnl AM_CXXFLAGS, where the variable did not exist. Harmless in effect on a modern glibc,
+dnl but it is the same silent-empty-variable failure as the CXXFLAGS blanking, so fix it in
+dnl the same place.
+AC_SUBST(pthread_cflags)
 
-AC_SUBST([CFLAGS], [""])
-AC_SUBST([CXXFLAGS], [""])
+dnl ---------------------------------------------------------------------------
+dnl 2026-08-05: preserve the user's CFLAGS/CXXFLAGS instead of discarding them.
+dnl
+dnl What was here:   AC_SUBST([CFLAGS], [""])   AC_SUBST([CXXFLAGS], [""])
+dnl
+dnl Those two lines SILENTLY threw away every flag passed to configure -- including the
+dnl $pthread_cflags appended four lines above -- so `./configure CXXFLAGS=...` compiled with
+dnl none of them and the generated Makefile carried a bare `CXXFLAGS = `. That is not a
+dnl cosmetic defect: a CI job in this project once passed while testing nothing at all
+dnl because of it (0 of 3671 compile lines carried the flag under test), and with the only
+dnl remaining source of flags being AM_CXXFLAGS, whose -march=native the user also could not
+dnl override, this fork had NO supported portable or reproducible build.
+dnl
+dnl This is now what the dd fork (configure.ac) and the qd fork (configure.in) already do:
+dnl the user's flags are kept and the project's defaults are appended. KNOWN WART, shared
+dnl with both siblings: the defaults are appended unconditionally, so `CXXFLAGS=-O0` yields
+dnl "-O0 ... -O2 -funroll-all-loops" and -O2 wins. Put an -O of your own AFTER these by
+dnl using the make line (`make CXXFLAGS=-O0`), which overrides the lot -- and which is also
+dnl the only way to reach the bundled sub-builds.
+CFLAGS="$CFLAGS -O2 -funroll-all-loops"
+CXXFLAGS="$CXXFLAGS -O2 -funroll-all-loops"
+AC_SUBST(CFLAGS)
+AC_SUBST(CXXFLAGS)
+
+dnl ---------------------------------------------------------------------------
+dnl -march=native pin (--enable-march-native / --disable-march-native).
+dnl
+dnl Makefile.am hardcoded -march=native into AM_CXXFLAGS. Combined with the blanked CXXFLAGS
+dnl above, that made the flag unremovable: the resulting binary was tied to the build host's
+dnl ISA and could not be reproduced, or even run, elsewhere. --disable-march-native is the
+dnl portable/reproducible build this fork did not previously have.
+dnl
+dnl THE DEFAULT IS DELIBERATELY LEFT AT "yes", i.e. at today's behaviour, and this is NOT an
+dnl endorsement of it. Flipping the default is a performance decision, and the only box
+dnl available when this was written could not produce a defensible timing (a busy laptop;
+dnl see patches/tierc_notes/hygiene_batch.md). The audit's expectation is that it costs
+dnl little here, because sdpa-gmp's arithmetic lives in libgmp's mpn kernels, which GMP's
+dnl own configure selects and which this flag does not touch -- but that is an expectation,
+dnl not a measurement, and nobody should flip the default on the strength of it.
+dnl
+dnl Kept in AM_CXXFLAGS rather than folded into CXXFLAGS so that its scope is unchanged:
+dnl the top-level C++ translation units only, not the bundled C sub-builds.
+AC_ARG_ENABLE(march-native,
+[  --disable-march-native  do not compile with -march=native (portable, reproducible binary)],
+[march_native=$enableval], [march_native=yes])
+
+MARCH_NATIVE_FLAG=""
+if test x"$march_native" = xyes; then
+  dnl A flag the compiler rejects must stop configure here, not silently vanish.
+  AC_MSG_CHECKING([whether $CXX accepts -march=native])
+  save_CXXFLAGS="$CXXFLAGS"
+  CXXFLAGS="$CXXFLAGS -march=native"
+  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]],[[]])],
+    [AC_MSG_RESULT([yes]); MARCH_NATIVE_FLAG="-march=native"],
+    [AC_MSG_RESULT([no])
+     AC_MSG_ERROR([$CXX does not accept -march=native; configure with --disable-march-native])])
+  CXXFLAGS="$save_CXXFLAGS"
+fi
+AC_SUBST(MARCH_NATIVE_FLAG)
 
 dnl some dummy settings
 if test x$SPOOLES_INCLUDEDIR = x; then

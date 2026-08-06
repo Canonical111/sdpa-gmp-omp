@@ -56,7 +56,13 @@ AUTOMAKE_OPTIONS = subdir-objects
 
 sdpa_gmp_LDFLAGS = -Wl,-rpath,$(GMP_LIBDIR)
 sdpa_gmp_LDADD = $(pthread_lib) -L$(SPOOLES_LIBDIR) -lspooles -L$(GMP_LIBDIR) $(OPENMP_CXXFLAGS) -L$(MPLAPACK_LIBDIR)
-AM_CXXFLAGS = -O2 -march=native $(pthread_cflags) -I$(SPOOLES_INCLUDEDIR) -DUseMETIS=0 -I$(GMP_INCLUDEDIR) $(OPENMP_CXXFLAGS) -I$(MPLAPACK_INCLUDEDIR)
+# 2026-08-05: -O2 and -march=native were hardcoded here while configure.ac blanked CXXFLAGS,
+# so neither could be overridden and there was no portable build. -O2 now arrives via
+# CXXFLAGS (configure.ac appends it, as dd and qd already did) and -march=native is behind
+# --enable-march-native / --disable-march-native, still default-on and still scoped to these
+# top-level C++ translation units. $(pthread_cflags) is now AC_SUBST'ed and no longer expands
+# to nothing.
+AM_CXXFLAGS = $(MARCH_NATIVE_FLAG) $(pthread_cflags) -I$(SPOOLES_INCLUDEDIR) -DUseMETIS=0 -I$(GMP_INCLUDEDIR) $(OPENMP_CXXFLAGS) -I$(MPLAPACK_INCLUDEDIR)
 sdpa_gmp_LDADD +=-lgmpxx -lgmp
 
 SUBDIRS = external

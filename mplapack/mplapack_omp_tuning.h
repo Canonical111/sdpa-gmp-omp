@@ -16,7 +16,21 @@
    generator is not part of this fork's build. */
 #define MPLAPACK_OMP_TUNING_VERSION 3
 
-/* Minimum gemm work (m*n*k multiply-adds) before an OpenMP fork/join pays for itself. */
+/* Minimum gemm work (m*n*k multiply-adds) before an OpenMP fork/join pays for itself.
+
+   UNCALIBRATED, and unlike the triangular gates below it carries no measurement of its own.
+   The constants that DO exist for this fork are in the triangular block: an mpf multiply-add
+   at 256 bits is 74-76 ns on thanos and 33-35 ns on pi, and a fork/join is ~0.6 us on thanos
+   and 0.6-2.1 us on pi. On those, 20000 is 0.7-1.5 ms of arithmetic, i.e. three orders of
+   magnitude above the fork/join -- so this gate is conservative rather than wrong, but the
+   margin is an accident and not a decision anyone measured. If gemm ever matters here,
+   calibrate it the way the triangular gates were calibrated; do not tune it by reasoning.
+
+   NOTE, because the mistake has been made in the sibling fork: a fork/join is ~0.6-2.1 us in
+   TOTAL, not per thread. A proposal to make these gates a function of the team size on the
+   basis of "~7 us per thread" (~168 us at 24 threads) is off by two orders of magnitude, and
+   the measurements below show the break-even does not usefully track team size in any case.
+   Read the "NOT scaled by team size" paragraph before changing the shape of any gate here. */
 #ifndef MPLAPACK_OMP_MIN_GEMM_WORK
 #define MPLAPACK_OMP_MIN_GEMM_WORK 20000.0
 #endif

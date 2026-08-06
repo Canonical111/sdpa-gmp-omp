@@ -31,18 +31,27 @@
 #include <mpblas_gmp.h>
 
 mpf_class Rdot_serial(mplapackint n, mpf_class *dx, mplapackint incx, mpf_class *dy, mplapackint incy);
-mpf_class Rdot_omp(mplapackint n, mpf_class *dx, mplapackint incx, mpf_class *dy, mplapackint incy);
 
-#define SINGLEOROMP 1000
+/* 2026-08-05: dispatch to Rdot_serial. This used to read `if (0) { Rdot_serial } else
+   { Rdot_omp }`, i.e. Rdot_serial was dead code behind a constant-false branch and every dot
+   product went to Rdot_omp.
 
-mpf_class Rdot(mplapackint const n, mpf_class *dx, mplapackint const incx, mpf_class *dy, mplapackint const incy) {
-    mplapackint ix = 0;
-    mplapackint iy = 0;
-    mplapackint i;
+   Rdot_omp is NOT parallel and never has been in this fork: every one of its pragmas is
+   commented out in the source (`//#pragma omp parallel`, `//#pragma omp for`,
+   `//#pragma omp critical`), so the name is a misnomer and the live path was a strictly
+   slower serial loop. It carries `mpf_class temp = dx[i]; temp *= dy[i]; local_result +=
+   temp;`, which constructs and destroys a GMP temporary -- a malloc and a free -- on EVERY
+   element. Rdot_serial does the same arithmetic on raw mpf_t with the two temporaries
+   mpf_init'ed once outside the loop, so its inner loop allocates nothing.
 
-    if (0) {
-        return Rdot_serial(n, dx, incx, dy, incy);
-    } else {
-        return Rdot_omp(n, dx, incx, dy, incy);
-    }
-}
+   COLD. This is not a speedup to quote. The kernel measures 1.69-1.73x, but Rdot is a
+   negligible share of a real solve and the end-to-end effect is about 1%, which is inside
+   this project's noise on any machine it has been measured on. It is here because it deletes
+   a dead branch and an allocation per element, not because it makes the solver faster.
+
+   Bit-identity is not assumed from the shape of the code -- both accumulate sequentially in
+   ascending index order at the same working precision, and Rdot_omp's extra
+   `result += local_result` starts from an exact zero, but that is an argument, not evidence.
+   The evidence is patches/regress.sh over the standard problem set, run against a golden
+   recorded from the parent commit; see patches/tierc_notes/hygiene_batch.md. */
+mpf_class Rdot(mplapackint const n, mpf_class *dx, mplapackint const incx, mpf_class *dy, mplapackint const incy) { return Rdot_serial(n, dx, incx, dy, incy); }
