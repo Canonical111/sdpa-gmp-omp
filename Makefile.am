@@ -1,11 +1,16 @@
 bin_PROGRAMS = sdpa_gmp
 
 if SYSTEM_MPLAPACK
+# Rtrsm_omp/Rtrmm_omp are THIS PROJECT's wrappers (B3), not MPLAPACK's, and
+# sdpa_linear.cpp / sdpa_jordan.cpp call them unconditionally. Listing them only in
+# the bundled arm below made --with-system-mplapack fail to link: a system MPLAPACK
+# neither declares nor provides these symbols. They are compiled in BOTH arms.
 sdpa_gmp_SOURCES = sdpa_chordal.cpp sdpa_dataset.cpp sdpa_io.cpp \
 sdpa_jordan.cpp sdpa_linear.cpp sdpa_main.cpp sdpa_newton.cpp sdpa_parts.cpp \
 sdpa_struct.cpp sdpa_tool.cpp sdpa_chordal.h sdpa_dataset.h sdpa_algebra.h \
 sdpa_include.h sdpa_io.h sdpa_jordan.h sdpa_linear.h sdpa_newton.h \
-sdpa_parts.h sdpa_right.h sdpa_struct.h sdpa_tool.h
+sdpa_parts.h sdpa_right.h sdpa_struct.h sdpa_tool.h \
+mplapack/Rtrsm_omp.cpp mplapack/Rtrmm_omp.cpp mplapack/mplapack_omp_tuning.h
 else
 sdpa_gmp_SOURCES = sdpa_chordal.cpp sdpa_dataset.cpp sdpa_io.cpp \
 sdpa_jordan.cpp sdpa_linear.cpp sdpa_main.cpp sdpa_newton.cpp sdpa_parts.cpp \

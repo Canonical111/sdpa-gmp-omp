@@ -1774,8 +1774,13 @@ bool Lal::multiply(DenseLinearSpace &retMat, DenseLinearSpace &aMat, mpf_class *
     if (retMat.LP_nBlock != aMat.LP_nBlock) {
         rError("multiply:: different memory size");
     }
+    /* scalar defaults to NULL in the declaration (sdpa_linear.h), and this branch
+       dereferenced it unconditionally. Every in-tree LP caller happens to pass one, so
+       the defect is latent rather than live -- but the API contract said otherwise.
+       NULL means "no scaling", i.e. a plain copy, which is what the dense paths do. */
     for (int l = 0; l < aMat.LP_nBlock; ++l) {
-        retMat.LP_block[l] = aMat.LP_block[l] * (*scalar);
+        retMat.LP_block[l] = (scalar == NULL) ? aMat.LP_block[l]
+                                              : aMat.LP_block[l] * (*scalar);
     }
 
     return total_judge;
