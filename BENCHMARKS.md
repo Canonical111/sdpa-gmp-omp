@@ -37,6 +37,8 @@ Median of 3 repeats, seconds (`wall_s`). Spread = (max-min)/median.
 
 **hardened8 vs pristine1: 2.36x**  (totals 223.2 s -> 94.5 s)
 
+Iteration counts are identical between these two configurations on all 5 problems, so this is a like-for-like speed ratio.
+
 ### Integrity
 
 - all repeats `ok`; iteration count and objective identical across repeats and across configs for every problem
@@ -73,6 +75,8 @@ Median of 3 repeats, seconds (`wall_s`). Spread = (max-min)/median.
 
 **fork24 vs pristine1: 3.36x**  (totals 92.7 s -> 27.6 s)
 
+Iteration counts are identical between these two configurations on all 5 problems, so this is a like-for-like speed ratio.
+
 ### Integrity
 
 - all repeats `ok`; iteration count and objective identical across repeats and across configs for every problem
@@ -106,6 +110,8 @@ Median of 3 repeats, seconds (`wall_s`). Spread = (max-min)/median.
 | **total** | | **172.0** | **115.4** | **166.5** | **63.3** |
 
 **fork8 vs pristine1: 2.72x**  (totals 172.0 s -> 63.3 s)
+
+Iteration counts are identical between these two configurations on all 5 problems, so this is a like-for-like speed ratio.
 
 ### Integrity
 

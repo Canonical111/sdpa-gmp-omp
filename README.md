@@ -62,3 +62,19 @@ otool -L sdpa_gmp | grep gomp   # must print libgomp
 ```
 
 License: GPL v2, unchanged (`COPYING`); original SDPA authors retain copyright.
+
+## Exit status
+
+Scripts that loop over problems can rely on the exit code:
+
+| outcome | exit |
+|---|---|
+| solver ran to any stopping condition (`pdOPT`, `pdFEAS`, `pFEAS`, `dFEAS`, `pdINF`, `pINF_dFEAS`, `pFEAS_dINF`, `pUNBD`, `dUNBD`, `noINFO`) | **0** |
+| iteration limit reached | **0** |
+| infeasibility / unboundedness detected | **0** |
+| malformed input, unreadable file, invalid parameter | **1** with a diagnostic (line-numbered for data files) |
+| numerical failure (e.g. the Schur Cholesky cannot be factorised) | **nonzero**, and no solution section is printed |
+
+Infeasibility and the iteration limit are valid mathematical results, not errors. Upstream
+exited 0 on *every* path -- including fatal errors -- so a crashed run was indistinguishable
+from a solved one in any harness that checks exit codes.
