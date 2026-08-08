@@ -299,13 +299,19 @@ HAVE_MPLAPACK=""
 save_CPPFLAGS="$CPPFLAGS"
 CPPFLAGS="$CPPFLAGS -I$MPLAPACK_INCLUDEDIR"
 AC_LANG_PUSH([C++])
-AC_CHECK_HEADER(mpblas_dd.h, HAVE_MPLAPACK_HEADER=yes)
+dnl 2026-08-08 (review2 finding 4): this arm probed mpblas_dd.h and linked
+dnl -lmplapack_dd -lmpblas_dd_opt -- the DOUBLE-DOUBLE backend, copied from the
+dnl dd fork. This solver is built on mpf_class: it includes mpblas_gmp.h and
+dnl mplapack_gmp.h and needs the _gmp libraries. The advertised
+dnl --with-system-mplapack was therefore unusable since the fork began, and no
+dnl CI row covers it. Probe and link the GMP backend.
+AC_CHECK_HEADER(mpblas_gmp.h, HAVE_MPLAPACK_HEADER=yes)
 CPPFLAGS=$save_CPPFLAGS
 
 if test x$HAVE_MPLAPACK_HEADER = xyes; then
   save_LDFLAGS="$LDFLAGS"
   LDFLAGS="$LDFLAGS -L$MPLAPACK_LIBDIR"
-  LIBS="$LDFLAGS -L$MPLAPACK_LIBDIR -lmplapack_dd -lmpblas_dd_opt"
+  LIBS="$LDFLAGS -L$MPLAPACK_LIBDIR -lmplapack_gmp -lmpblas_gmp_opt"
  # AC_CHECK_FUNC(Rsyev, [HAVE_MPLAPACK=yes])
   HAVE_MPLAPACK=yes
   if test x$IS_LINUX = x1; then
