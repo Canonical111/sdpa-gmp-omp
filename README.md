@@ -3,7 +3,10 @@
 OpenMP-threaded, reproducible fork of sdpa-gmp.
 
 Fork of [nakatamaho/sdpa-gmp](https://github.com/nakatamaho/sdpa-gmp) (upstream README preserved as [README-UPSTREAM.md](README-UPSTREAM.md)) at `ca110db`, carrying
-two patches (kernel fixes + Schur-complement threading). Reported upstream; not adopted there.
+originally two patches (kernel fixes + Schur-complement threading); the fork has
+since gained the correctness batch, record-bounded parsing, the A2/A3 kernel work,
+the B3 triangulars and a portable build (see git log and BENCHMARKS.md). Reported
+upstream; not adopted there.
 
 **Measured** (requested 200-bit = actual 256-bit precision; 5 SDPLIB problems, external wall
 clock, median of 3 pinned repeats):
