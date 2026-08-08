@@ -86,6 +86,20 @@ jobs:
           grep -q objValPrimal /tmp/neg.out 2>/dev/null && fail "negative index produced a solution"
           # block index out of range
           awk 'NR==6 {print "1 99 1 1 1.0"; next} {print}' example1.dat-s > bad-block.dat-s
+          # six fields on one record: extra token must be rejected AT ITS LINE,
+          # not diagnosed as a truncation four records later (review2 finding on
+          # the earlier wrong-diagnostic behaviour)
+          awk 'NR==6 {print "0 1 1 1 -11 99"; next} {print}' example1.dat-s > six-field.dat-s
+          rc=0; ./sdpa_gmp -ds six-field.dat-s -o /tmp/sf.out -p param.sdpa 2>sf.err || rc=$?
+          [ "$rc" -eq 1 ] || fail "six-field record: rc=$rc, want 1"
+          grep -q 'line 6' sf.err || fail "six-field record not diagnosed at line 6: $(head -1 sf.err)"
+          # zero and negative header dimensions must be clean rejections, not
+          # bad_array_new_length aborts (review2 dimension hardening)
+          for dim in 0 -3; do
+            awk -v d=$dim 'NR==1 {print d; next} {print}' example1.dat-s > bad-m.dat-s
+            rc=0; ./sdpa_gmp -ds bad-m.dat-s -o /tmp/bm.out -p param.sdpa 2>bm.err || rc=$?
+            [ "$rc" -eq 1 ] || fail "m=$dim: rc=$rc, want 1 (clean rejection)"
+          done
           rc=$(run_rc ./sdpa_gmp -ds bad-block.dat-s -o /tmp/bb.out -p param.sdpa)
           [ "$rc" -ne 0 ] || fail "out-of-range block index accepted (rc=0)"
           [ "$rc" -lt 128 ] || fail "bad block index killed by signal (rc=$rc), not diagnosed"
