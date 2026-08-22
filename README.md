@@ -17,6 +17,48 @@ repository for upstream's own documentation. Reported upstream; not adopted ther
 | **Why it works this way** | [doc/technical.pdf](doc/technical.pdf) — mechanisms, the derivation behind the factorisation rule, every environment variable, the exit-status contract, and what is *not* established |
 | **Full benchmark tables** | [BENCHMARKS.md](BENCHMARKS.md), harness in [`bench/`](bench/) |
 
+## What was improved
+
+**Threading the regions that dominate.** The `bMat` build, the sparse Cholesky, the `bMat`
+assembly and the forward triangular solve are threaded. This is where the benchmark tables below come from,
+and the table's own decomposition is the honest summary: the gain is scaling, not faster kernels.
+
+The forward solve is **bit-identical** by construction — within a row the writes go to distinct
+destinations. The backward pass reassociates a sum, so it is opt-in behind `SDPA_SOLVE_BACKWARD`
+and off by default.
+
+**Reproducibility, measured rather than asserted.** Four problems at 1, 8, 20 and 40 threads, two
+repetitions each — 32 runs — produced **exactly one distinct objective and one iteration count per
+problem**. CI asserts the 1-thread-versus-N-thread case on every push. Upstream threaded is not
+reproducible: on the sibling `sdpa-dd` fork, where this was first diagnosed, one problem ran 50,
+51, 56, 65 and 80 iterations across five identical invocations, and three returned a different
+objective run to run. The cause was a reduction combined under `omp critical`, so the summation
+order followed thread scheduling.
+
+**A re-derived factorisation choice (2026-08-18).** Four gates decide dense vs sparse for the
+Schur complement, and gates 2 and 3 were both driven by a single constant — so neither could be
+retuned without moving the other. Splitting it frees gate 3, which then stops being a tuned
+threshold at all: symbolic factorisation only adds entries, so an aggregate density above F
+already proves the ordered fill exceeds F, making gate 3 the provable early exit from gate 4.
+**One tunable (F = 0.40, unchanged) replaces two.**
+
+On a 221-instance census of bootstrap problems, **167 instances across seven structures** stop
+taking a route that cost **2.6–9.8×** in time and **3.5–4.9×** in peak memory, with no reversal at
+any of nine labelled thread points on two architectures. Not "sparse always wins": SDPLIB
+`truss5` has an ordered fill of 1.0 and dense is 1.4× faster there — gate 4 sends it to dense,
+which is the point of testing fill rather than assuming an answer.
+
+**Two inherited kernel defects, fixed.** `mplapack` 2.0.1 had dropped netlib `dgemm`'s zero-skip
+guard, so multiplying by zero still paid full multiprecision cost; it is restored in
+`mplapack/Rgemm_NN_omp.cpp` and `Rgemm_NT_omp.cpp`. And OpenMP regions were entered regardless of
+problem size — upstream has a threshold mechanism but disables it behind `if (0)`, and it cannot
+simply be switched on because the `_ref` bodies it calls are absent and would not link. Both were
+quantified on `sdpa-dd` rather than here, so the figures live in that fork's write-up; at 256-bit
+they would need re-measuring, which is also why the OpenMP thresholds carry a precision caveat.
+
+**Reporting that does not lie.** A recoverable numerical failure is reported as
+`solveStatus = PARTIAL` naming the failing iteration. Upstream exits 0 on every path.
+
 ## The benchmarks: best-replicated first, then the current reference
 
 Two campaigns are summarised here. The table directly below is the **best-replicated** one
@@ -91,44 +133,3 @@ threaded triangular solve.
 
 </details>
 
-## What was improved
-
-**Threading the regions that dominate.** The `bMat` build, the sparse Cholesky, the `bMat`
-assembly and the forward triangular solve are threaded. This is where the table above comes from,
-and the table's own decomposition is the honest summary: the gain is scaling, not faster kernels.
-
-The forward solve is **bit-identical** by construction — within a row the writes go to distinct
-destinations. The backward pass reassociates a sum, so it is opt-in behind `SDPA_SOLVE_BACKWARD`
-and off by default.
-
-**Reproducibility, measured rather than asserted.** Four problems at 1, 8, 20 and 40 threads, two
-repetitions each — 32 runs — produced **exactly one distinct objective and one iteration count per
-problem**. CI asserts the 1-thread-versus-N-thread case on every push. Upstream threaded is not
-reproducible: on the sibling `sdpa-dd` fork, where this was first diagnosed, one problem ran 50,
-51, 56, 65 and 80 iterations across five identical invocations, and three returned a different
-objective run to run. The cause was a reduction combined under `omp critical`, so the summation
-order followed thread scheduling.
-
-**A re-derived factorisation choice (2026-08-18).** Four gates decide dense vs sparse for the
-Schur complement, and gates 2 and 3 were both driven by a single constant — so neither could be
-retuned without moving the other. Splitting it frees gate 3, which then stops being a tuned
-threshold at all: symbolic factorisation only adds entries, so an aggregate density above F
-already proves the ordered fill exceeds F, making gate 3 the provable early exit from gate 4.
-**One tunable (F = 0.40, unchanged) replaces two.**
-
-On a 221-instance census of bootstrap problems, **167 instances across seven structures** stop
-taking a route that cost **2.6–9.8×** in time and **3.5–4.9×** in peak memory, with no reversal at
-any of nine labelled thread points on two architectures. Not "sparse always wins": SDPLIB
-`truss5` has an ordered fill of 1.0 and dense is 1.4× faster there — gate 4 sends it to dense,
-which is the point of testing fill rather than assuming an answer.
-
-**Two inherited kernel defects, fixed.** `mplapack` 2.0.1 had dropped netlib `dgemm`'s zero-skip
-guard, so multiplying by zero still paid full multiprecision cost; it is restored in
-`mplapack/Rgemm_NN_omp.cpp` and `Rgemm_NT_omp.cpp`. And OpenMP regions were entered regardless of
-problem size — upstream has a threshold mechanism but disables it behind `if (0)`, and it cannot
-simply be switched on because the `_ref` bodies it calls are absent and would not link. Both were
-quantified on `sdpa-dd` rather than here, so the figures live in that fork's write-up; at 256-bit
-they would need re-measuring, which is also why the OpenMP thresholds carry a precision caveat.
-
-**Reporting that does not lie.** A recoverable numerical failure is reported as
-`solveStatus = PARTIAL` naming the failing iteration. Upstream exits 0 on every path.
