@@ -26,8 +26,22 @@
 # Benchmarks — sdpa-gmp-omp
 
 Fork base: upstream `ca110db`. **Requested 200-bit precision; GMP rounds up to 256 bits
-(5 limbs), which is the actual working precision.** thanos: AMD EPYC 7232P, 8 physical
-cores, Ubuntu.
+(5 limbs), which is the actual working precision.**
+
+**Every number on this page can be re-derived from raw data in this repository.** The
+2026-08-22 five-host campaign — the current reference — is one per-repeat TSV per machine:
+
+| [`bench/fivehost-2026-08-22/`](bench/fivehost-2026-08-22/) | rows |
+|---|---:|
+| [`gmp_fivehost_expanse.tsv`](bench/fivehost-2026-08-22/gmp_fivehost_expanse.tsv) — SDSC Expanse, 2×EPYC 7742 | 371 |
+| [`gmp_fivehost_symmetry.tsv`](bench/fivehost-2026-08-22/gmp_fivehost_symmetry.tsv) — 2×Xeon Gold 6148 node | 318 |
+| [`gmp_fivehost_pi.tsv`](bench/fivehost-2026-08-22/gmp_fivehost_pi.tsv) — i9-13900K workstation | 273 |
+| [`gmp_fivehost_thanos.tsv`](bench/fivehost-2026-08-22/gmp_fivehost_thanos.tsv) — EPYC 7232P workstation | 183 |
+| [`gmp_fivehost_mac.tsv`](bench/fivehost-2026-08-22/gmp_fivehost_mac.tsv) — Apple M1 Max laptop | 183 |
+
+with an integrity validator beside them (`python3 validate_integrity.py`). The earlier
+small-machine campaigns are `bench/gmp_v2_{thanos,pi,mac}.tsv`, and the non-SDPLIB inputs
+themselves are in [`bench/problems/`](bench/problems/).
 
 ## Host key
 
