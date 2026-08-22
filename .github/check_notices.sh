@@ -81,6 +81,12 @@ def notice_blocks(text):
     return out
 
 
+# The commit this fork diverged from, in nakatamaho/sdpa-gmp -- publicly verifiable upstream
+# even though this repository's squashed history no longer contains it.
+UPSTREAM_URL = "https://github.com/nakatamaho/sdpa-gmp.git"
+UPSTREAM_BASE = "ca110db5ea1cc46e811b70dfea9cbb25db74448d"
+
+
 def check_clone(clone):
     name = os.path.basename(os.path.normpath(clone))
     bad = []
@@ -98,9 +104,20 @@ def check_clone(clone):
         return 1
     base = git("rev-parse", forks[-1] + "^")
     if base.returncode != 0 or not base.stdout.strip():
-        print("FAIL: %s -- upstream base unreachable (shallow clone: use a full clone or a bundle)" % name, file=sys.stderr)
-        return 1
-    base = base.stdout.strip()
+        # The earliest fork commit has no parent. On a full-history clone that is an error --
+        # but on the published repository it is the normal shape: history was squashed to a
+        # single release commit on 2026-08-22, so the fork IS the root. The upstream base is
+        # then taken from upstream's own public repository, where it is verifiable
+        # independently of anything in this fork's history. git diff A B needs no common
+        # ancestry, so the endpoint diff is exactly the same set of files as before the squash.
+        if git("cat-file", "-e", UPSTREAM_BASE + "^{commit}").returncode != 0:
+            if git("fetch", "--quiet", UPSTREAM_URL, UPSTREAM_BASE).returncode != 0:
+                print("FAIL: %s -- upstream base %s neither in history nor fetchable from %s"
+                      % (name, UPSTREAM_BASE[:9], UPSTREAM_URL), file=sys.stderr)
+                return 1
+        base = UPSTREAM_BASE
+    else:
+        base = base.stdout.strip()
 
     diff = git("diff", "--name-only", base + "..HEAD")
     if diff.returncode != 0:
