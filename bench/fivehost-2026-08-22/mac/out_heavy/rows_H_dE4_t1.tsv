@@ -1,2 +1,0 @@
-machine	backend	problem	m	config	threads	cpuset	param_sha	repeat	wall_s	mainloop_s	iters	phase	obj	peak_rss_MB	status	rc
-mac-m1max	gmp	dE4	7401	fork_t1	1	-	3859004693f5546f	1	6710.08	6708.869412	33	pdOPT	5.3347386976202051e-01	913.6	ok	0

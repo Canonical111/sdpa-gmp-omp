@@ -49,7 +49,11 @@ total_fail = 0
 grand_rows = grand_cells = grand_skipped = 0
 for h in HOSTS:
     rows, skipped = [], 0
-    for f in sorted(glob.glob(os.path.join(ROOT, h, "out_*", "rows_*.tsv"))):
+    # One TSV per machine. Each row carries a `src` column naming the per-cell file it came from
+    # in the original campaign output -- that column is what keeps the known duplicate cell
+    # (12_min/upstream/64: one repeat=1 row from out_up/, one from out_up12/) distinguishable
+    # after concatenation, instead of looking like an inexplicable pair of identical labels.
+    for f in sorted(glob.glob(os.path.join(ROOT, "gmp_fivehost_%s.tsv" % h))):
         for r in csv.DictReader(open(f), delimiter="\t"):
             if not r.get("wall_s") or r["wall_s"] == "-":
                 skipped += 1          # a declared-but-unexecuted cell, not a measurement

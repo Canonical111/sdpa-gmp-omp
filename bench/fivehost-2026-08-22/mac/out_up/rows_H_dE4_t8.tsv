@@ -1,2 +1,0 @@
-machine	backend	problem	m	config	threads	cpuset	param_sha	repeat	wall_s	mainloop_s	iters	phase	obj	peak_rss_MB	status	rc
-mac-m1max	gmp	dE4	7401	up_t8	8	-	3859004693f5546f	1	-	-	-	-	-	-	timeout	124
