@@ -1,0 +1,2 @@
+machine	backend	problem	m	config	threads	cpuset	param_sha	repeat	wall_s	mainloop_s	iters	phase	obj	peak_rss_MB	status	rc
+pi-i9-13900k	gmp	dE4	7401	fork_t4	4	0,2,4,6	3859004693f5546f	1	1118.41	1117.520488	33	pdOPT	5.3347386976202051e-01	870.1	ok	0

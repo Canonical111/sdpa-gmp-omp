@@ -29,14 +29,45 @@ Fork base: upstream `ca110db`. **Requested 200-bit precision; GMP rounds up to 2
 (5 limbs), which is the actual working precision.** thanos: AMD EPYC 7232P, 8 physical
 cores, Ubuntu.
 
+## Host key
+
+The `machine` ids recorded in the raw TSVs are internal hostnames; this is the hardware behind
+them. Every row in every raw file carries one of these ids.
+
+| TSV id | hardware | physical cores | notes |
+|---|---|---:|---|
+| `expanse-epyc7742` | SDSC Expanse compute node, 2×AMD EPYC 7742 | 128 | exclusive node, `taskset`-pinned |
+| `symmetry-xeon6148` | cluster node, 2×Intel Xeon Gold 6148 | 40 | 2-way SMT, only physical cores used |
+| `pi-i9-13900k` | workstation, Intel i9-13900K (hybrid) | 24 = 8P + 16E | P-cores 5.5 GHz, E-cores 4.3 GHz |
+| `thanos-epyc7232p` | workstation, AMD EPYC 7232P | 8 | |
+| `mac-m1max` | laptop, Apple M1 Max (hybrid) | 8P + 2E | no per-process affinity on macOS |
+
+## Which table should I use?
+
+| you want | read |
+|---|---|
+| the current reference numbers (1→128 ladder, per-family parameters, sparse problems) | [Expanse — full 1→128 thread ladder](#expanse--full-1128-thread-ladder-five-host-campaign-2026-08-22) |
+| the best-replicated fork-vs-upstream comparison (3 repeats, 70 paired runs) | [Expanse — 32 threads vs pristine upstream](#expanse--amd-epyc-7742-32-threads--vs-pristine-upstream-2026-08-16) |
+| sdpa-gmp against SDPB | [Versus SDPB](#versus-sdpb-the-standard-multiprecision-sdp-solver) |
+| the threaded sparse-Cholesky path (dE3/dE4) | [The large sparse problems](#the-large-sparse-problems--the-path-the-tables-below-cannot-reach) |
+| behaviour on an 8–24-core workstation | the three small-machine tables at the end |
+
+Rule of thumb: quote totals and memory from the **ladder** (widest scope, but single runs on the
+heavy tier), and quote fork-vs-upstream *ratios* from the **32-thread campaign** where replication
+is strongest — the two agree where they overlap.
+
 ## Methodology
 
 External wall-clock seconds, **median of 3 repeats**, spread reported where it exceeds
 rounding. Runs are pinned to physical cores on Linux (`taskset` + `OMP_PROC_BIND=true
 OMP_PLACES=cores`, CPU set recorded per row); macOS exposes no per-process affinity, so those
 runs use OpenMP binding plus one unrecorded warmup. The parameter file is passed explicitly
-and its SHA-256 recorded. Every repeat is a row in the raw TSVs published alongside this
-document; a run is counted only if it exited cleanly and every field parsed. Iteration counts
+and its SHA-256 recorded. Every repeat is a row in raw TSVs published in this repository: the
+three small-machine campaigns in [`bench/gmp_v2_*.tsv`](bench/) and the 2026-08-22 five-host
+campaign — including the Expanse ladder — in [`bench/fivehost-2026-08-22/`](bench/fivehost-2026-08-22/),
+which carries its own integrity validator. The SDPB side's raw per-cell output lives in the
+non-public companion repository and the Expanse share, as the SDPB section states.
+A run is counted only if it exited cleanly and every field parsed. Iteration counts
 and objectives are checked across repeats and across configurations -- a wall-time ratio
 between builds with different iteration counts measures path length, not speed, and is
 flagged.
@@ -351,9 +382,7 @@ So the dense-`bMat` limitation above is not an artefact of the old chooser: thes
 dense factorisation because their factors *are* dense, and the new rule agrees. Census and
 verifier: `review/artifacts/gate3/sdplib_census.tsv` and `census_verify.sh` in the recipe repo.
 
-## thanos — EPYC 7232P, 8 physical cores
-
-## thanos-epyc7232p — gmp-200bit — `wall_s`
+## AMD EPYC 7232P workstation, 8 cores — gmp-200bit — `wall_s`  (TSV id `thanos-epyc7232p`)
 
 Median of 3 repeats, seconds (`wall_s`). Spread = (max-min)/median.
 
@@ -385,13 +414,12 @@ Iteration counts are identical between these two configurations on all 5 problem
 | arch0 | 36.6 | 36.3 | 36.5 | 36.5 | 36.2 |
 
 
-## pi — i9-13900K, 24 physical cores
+## Intel i9-13900K workstation, 24 cores (8P+16E)  (TSV id `pi-i9-13900k`)
 
 The `fork*` binary here is the one produced by the README build instructions, from a fresh
 clone of this repository — the benchmark validates the installation guide's output, not a
 hand-configured tree. `fork8P` is pinned to the 8 P-cores only.
 
-## pi-i9-13900k — gmp-200bit — `wall_s`
 
 Median of 3 repeats, seconds (`wall_s`). Spread = (max-min)/median.
 
@@ -423,11 +451,10 @@ Iteration counts are identical between these two configurations on all 5 problem
 | arch0 | 36.4 | 36.4 | 36.4 | 36.2 | 36.4 |
 
 
-## Mac — Apple M1 Max (8P+2E)
+## Apple M1 Max laptop, 8P+2E  (TSV id `mac-m1max`)
 
 The fork binary is again the one built by this README's macOS instructions.
 
-## mac-m1max — gmp-200bit — `wall_s`
 
 Median of 3 repeats, seconds (`wall_s`). Spread = (max-min)/median.
 
@@ -470,4 +497,4 @@ Caveat carried honestly: the OpenMP work thresholds were calibrated on double-do
 arithmetic; other precisions should re-run the calibration sweep (see the companion
 repository).
 
-Raw data: [`bench/gmp_v2_thanos.tsv`](bench/gmp_v2_thanos.tsv), [`bench/gmp_v2_pi.tsv`](bench/gmp_v2_pi.tsv).
+Raw data: [`bench/gmp_v2_thanos.tsv`](bench/gmp_v2_thanos.tsv), [`bench/gmp_v2_pi.tsv`](bench/gmp_v2_pi.tsv), [`bench/gmp_v2_mac.tsv`](bench/gmp_v2_mac.tsv); five-host campaign rows in [`bench/fivehost-2026-08-22/`](bench/fivehost-2026-08-22/); the non-SDPLIB inputs themselves in [`bench/problems/`](bench/problems/).

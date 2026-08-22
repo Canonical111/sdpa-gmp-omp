@@ -1,0 +1,2 @@
+machine	backend	problem	m	config	threads	cpuset	param_sha	repeat	wall_s	mainloop_s	iters	phase	obj	peak_rss_MB	status	rc
+expanse-epyc7742	gmp	12_min	330	up_t1	1	0	e3e82d8dfcd9b7c3	1	3964	3958.874399	78	pdOPT	-4.7236425487823241e-01	126.6	ok	0

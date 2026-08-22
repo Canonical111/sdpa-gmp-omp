@@ -1,0 +1,13 @@
+machine	backend	problem	m	config	threads	cpuset	param_sha	repeat	wall_s	mainloop_s	iters	phase	obj	peak_rss_MB	status	rc
+thanos-epyc7232p	gmp	8_min	19	fork_t1	1	0	e3e82d8dfcd9b7c3	1	0.75	0.744252	52	pdOPT	-5.3812637297885203e-01	11.7	ok	0
+thanos-epyc7232p	gmp	8_min	19	fork_t1	1	0	e3e82d8dfcd9b7c3	2	0.75	0.745404	52	pdOPT	-5.3812637297885203e-01	11.7	ok	0
+thanos-epyc7232p	gmp	8_min	19	fork_t1	1	0	e3e82d8dfcd9b7c3	3	0.76	0.748684	52	pdOPT	-5.3812637297885203e-01	11.7	ok	0
+thanos-epyc7232p	gmp	8_min	19	up_t1	1	0	e3e82d8dfcd9b7c3	1	0.81	0.802671	52	pdOPT	-5.3812637297885203e-01	11.7	ok	0
+thanos-epyc7232p	gmp	8_min	19	up_t1	1	0	e3e82d8dfcd9b7c3	2	0.81	0.800901	52	pdOPT	-5.3812637297885203e-01	11.5	ok	0
+thanos-epyc7232p	gmp	8_min	19	up_t1	1	0	e3e82d8dfcd9b7c3	3	0.81	0.800945	52	pdOPT	-5.3812637297885203e-01	11.6	ok	0
+thanos-epyc7232p	gmp	10_min	74	fork_t1	1	0	e3e82d8dfcd9b7c3	1	35.82	35.659093	61	pdOPT	-4.7926054387208136e-01	12.7	ok	0
+thanos-epyc7232p	gmp	10_min	74	fork_t1	1	0	e3e82d8dfcd9b7c3	2	35.72	35.557090	61	pdOPT	-4.7926054387208136e-01	12.4	ok	0
+thanos-epyc7232p	gmp	10_min	74	fork_t1	1	0	e3e82d8dfcd9b7c3	3	35.82	35.657586	61	pdOPT	-4.7926054387208136e-01	12.7	ok	0
+thanos-epyc7232p	gmp	10_min	74	up_t1	1	0	e3e82d8dfcd9b7c3	1	39.13	39.007673	61	pdOPT	-4.7926054387208136e-01	12.6	ok	0
+thanos-epyc7232p	gmp	10_min	74	up_t1	1	0	e3e82d8dfcd9b7c3	2	38.87	38.743438	61	pdOPT	-4.7926054387208136e-01	12.6	ok	0
+thanos-epyc7232p	gmp	10_min	74	up_t1	1	0	e3e82d8dfcd9b7c3	3	38.94	38.808938	61	pdOPT	-4.7926054387208136e-01	12.8	ok	0

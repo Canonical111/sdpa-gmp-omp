@@ -1,0 +1,13 @@
+machine	backend	problem	m	config	threads	cpuset	param_sha	repeat	wall_s	mainloop_s	iters	phase	obj	peak_rss_MB	status	rc
+symmetry-xeon6148	gmp	8_min	19	fork_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	1	0.76	0.742172	52	pdOPT	-5.3812637297885203e-01	6.5	ok	0
+symmetry-xeon6148	gmp	8_min	19	fork_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	2	0.77	0.744053	52	pdOPT	-5.3812637297885203e-01	6.5	ok	0
+symmetry-xeon6148	gmp	8_min	19	fork_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	3	0.76	0.740930	52	pdOPT	-5.3812637297885203e-01	6.5	ok	0
+symmetry-xeon6148	gmp	8_min	19	up_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	1	0.68	0.664625	52	pdOPT	-5.3812637297885203e-01	6.2	ok	0
+symmetry-xeon6148	gmp	8_min	19	up_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	2	0.69	0.666845	52	pdOPT	-5.3812637297885203e-01	6.2	ok	0
+symmetry-xeon6148	gmp	8_min	19	up_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	3	0.68	0.664186	52	pdOPT	-5.3812637297885203e-01	6.2	ok	0
+symmetry-xeon6148	gmp	10_min	74	fork_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	1	14.74	14.571762	61	pdOPT	-4.7926054387208136e-01	13.9	ok	0
+symmetry-xeon6148	gmp	10_min	74	fork_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	2	14.75	14.574401	61	pdOPT	-4.7926054387208136e-01	13.9	ok	0
+symmetry-xeon6148	gmp	10_min	74	fork_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	3	14.74	14.564445	61	pdOPT	-4.7926054387208136e-01	13.9	ok	0
+symmetry-xeon6148	gmp	10_min	74	up_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	1	23.52	23.388160	61	pdOPT	-4.7926054387208136e-01	13.2	ok	0
+symmetry-xeon6148	gmp	10_min	74	up_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	2	23.5	23.372177	61	pdOPT	-4.7926054387208136e-01	13.2	ok	0
+symmetry-xeon6148	gmp	10_min	74	up_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	3	23.45	23.320484	61	pdOPT	-4.7926054387208136e-01	13.2	ok	0

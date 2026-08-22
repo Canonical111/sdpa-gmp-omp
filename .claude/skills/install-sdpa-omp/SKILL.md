@@ -41,8 +41,10 @@ To install a sibling solver, clone it first (they are separate repositories):
 ## After installing
 
 - **Threads: start at one socket's worth of physical cores, not the whole machine's.** On Linux
-  pin with `taskset -c <cores>` plus `OMP_PROC_BIND=true OMP_PLACES=cores`. Hybrid CPUs: count
-  P+E physical cores, never SMT threads.
+  pin with `taskset -c <cores>` plus `OMP_PROC_BIND=true OMP_PLACES=cores`. Hybrid CPUs: never
+  count SMT threads; whether adding E-cores to the P-cores helps is machine- and
+  problem-specific, so benchmark P-only against P+E once before a long run (on an i9-13900K all
+  24 physical cores won the five-problem total, but not every individual problem).
 
   "Match `OMP_NUM_THREADS` to physical cores" is the usual advice and it is **wrong on a large
   two-socket node**, because the multiprecision Cholesky's per-update barrier ends up waiting on
@@ -55,7 +57,10 @@ To install a sibling solver, clone it first (they are separate repositories):
 
   So the crossing pays on a small two-socket box and costs badly on a big one. If you have one
   socket, use all its physical cores. If you have two, measure both before committing a long
-  run — ten minutes of `32 vs 64` settles it, and the answer is machine-specific.
+  run — ten minutes comparing **one socket's physical-core count against the whole machine's**
+  settles it (64 vs 128 on a 2×64 EPYC; 20 vs 40 on a 2×20 Xeon), pinning each run to exactly
+  the cores it is meant to use. The answer is machine- AND problem-specific: on the same EPYC,
+  large sparse problems regress past one socket while a dense m=330 problem does not.
 - Verify a solve prints identical `Iteration =` and `objValPrimal` at 1 thread and N threads
   — these forks are trajectory-stable by design; upstream is not. Measured across a full thread
   sweep (4 problems × {1,8,20,40} threads × 2 reps): every objective and iteration count
@@ -91,7 +96,8 @@ To install a sibling solver, clone it first (they are separate repositories):
   **On gmp since 2026-08-20 `INSTALL` and `aclocal.m4` are untracked and gitignored**, so a
   successful build there leaves no working-tree changes at all and the restore advice below does
   not apply to it. On dd and qd they are still tracked:
-  autoreconf refreshes two *tracked* boilerplate files (`INSTALL`; on gmp also `aclocal.m4`),
+  autoreconf refreshes tracked boilerplate (`INSTALL` — verify against each fork's current
+  tree before copying this skill across forks),
   and on macOS the qd build replaces tracked `config.guess`/`config.sub`/`configure` with
   arm64-aware versions — the only working-tree changes a successful run leaves. Expected.
   If restoring them: first run `git diff` on each file and confirm its only changes are

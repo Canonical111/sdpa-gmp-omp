@@ -1,0 +1,2 @@
+machine	backend	problem	m	config	threads	cpuset	param_sha	repeat	wall_s	mainloop_s	iters	phase	obj	peak_rss_MB	status	rc
+thanos-epyc7232p	gmp	12_min	330	fork_t1	1	0	e3e82d8dfcd9b7c3	1	3986.35	3976.911443	78	pdOPT	-4.7236425487823241e-01	125.7	ok	0

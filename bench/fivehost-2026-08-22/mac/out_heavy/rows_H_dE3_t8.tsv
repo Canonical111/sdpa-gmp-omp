@@ -1,0 +1,2 @@
+machine	backend	problem	m	config	threads	cpuset	param_sha	repeat	wall_s	mainloop_s	iters	phase	obj	peak_rss_MB	status	rc
+mac-m1max	gmp	dE3	6067	fork_t8	8	-	3859004693f5546f	1	883.94	882.949515	33	pdOPT	5.3367937294869112e-01	662.1	ok	0

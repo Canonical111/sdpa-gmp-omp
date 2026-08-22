@@ -1,0 +1,2 @@
+machine	backend	problem	m	config	threads	cpuset	param_sha	repeat	wall_s	mainloop_s	iters	phase	obj	peak_rss_MB	status	rc
+symmetry-xeon6148	gmp	12_min	330	fork_t2	2	0,1	e3e82d8dfcd9b7c3	1	1866.91	1858.232033	78	pdOPT	-4.7236425487823241e-01	127.6	ok	0

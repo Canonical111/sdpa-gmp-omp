@@ -88,12 +88,13 @@ enough that the threaded regions dominate — with a matched parameter file:
 ```bash
 xz -dkc Canonical_example.dat-s.xz > Canonical_example.dat-s
 
-time OMP_NUM_THREADS=1 ./sdpa_gmp -ds Canonical_example.dat-s -o t1.out -p Canonical_example.param.sdpa
-time OMP_NUM_THREADS=8 ./sdpa_gmp -ds Canonical_example.dat-s -o t8.out -p Canonical_example.param.sdpa
+time OMP_NUM_THREADS=1 ./sdpa_gmp -ds Canonical_example.dat-s -o t1.result -p Canonical_example.param.sdpa
+time OMP_NUM_THREADS=8 ./sdpa_gmp -ds Canonical_example.dat-s -o t8.result -p Canonical_example.param.sdpa
 
 # the answer must not depend on the thread count
-diff <(grep -E 'objValPrimal|objValDual|phase.value|relative gap|Iteration =' t1.out) \
-     <(grep -E 'objValPrimal|objValDual|phase.value|relative gap|Iteration =' t8.out)
+diff <(grep -E 'objValPrimal|objValDual|phase.value|relative gap|Iteration =' t1.result) \
+     <(grep -E 'objValPrimal|objValDual|phase.value|relative gap|Iteration =' t8.result)
+# .result is gitignored, so this check leaves the working tree clean
 ```
 
 **What to expect.** The `diff` must print nothing, and both runs must report:
@@ -160,9 +161,14 @@ two-socket node**. Measured on this solver:
 | 2×20-core Xeon | 20 → 40 threads | 1.04–1.30× faster |
 
 So it is a property of the machine, not a number to copy. One socket: use all its physical cores.
-Two sockets and a long job ahead: spend ten minutes measuring `32 vs 64` first. Small problems
-saturate early — on a 2×20 Xeon an m=2439 problem gains only 4% past one socket, so packing two
-20-thread jobs per node beats one 40-thread job.
+Two sockets and a long job ahead: spend ten minutes comparing **one socket's physical-core count
+against the whole machine's** — that is 64 vs 128 on the 2×64 EPYC and 20 vs 40 on the 2×20 Xeon
+above — with each run pinned to exactly the cores it is meant to use (`taskset -c 0-63` against
+`taskset -c 0-127`). The answer is also **problem-dependent**, not only machine-dependent: on the
+same EPYC node, the 1→128 ladder in BENCHMARKS.md has the large sparse problems 1.27–1.42× slower
+at 128 threads than at 64 while a dense m=330 problem is fastest at 128. Small problems saturate
+early — on a 2×20 Xeon an m=2439 problem gains only 4% past one socket, so packing two 20-thread
+jobs per node beats one 40-thread job.
 
 `SDPA_SOLVE_MAX_TEAM` needs no action from you; it protects the triangular solve by itself.
 *Why the socket boundary costs what it does, and why the solve needs a cap at all:*

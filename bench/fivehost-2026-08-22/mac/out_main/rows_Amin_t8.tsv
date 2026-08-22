@@ -1,0 +1,13 @@
+machine	backend	problem	m	config	threads	cpuset	param_sha	repeat	wall_s	mainloop_s	iters	phase	obj	peak_rss_MB	status	rc
+mac-m1max	gmp	8_min	19	up_t8	8	-	e3e82d8dfcd9b7c3	1	1.76	1.744762	52	pdOPT	-5.3812637297885203e-01	8.7	ok	0
+mac-m1max	gmp	8_min	19	up_t8	8	-	e3e82d8dfcd9b7c3	2	1.58	1.559050	52	pdOPT	-5.3812637297885203e-01	8.7	ok	0
+mac-m1max	gmp	8_min	19	up_t8	8	-	e3e82d8dfcd9b7c3	3	1.50	1.480328	52	pdOPT	-5.3812637297885203e-01	8.7	ok	0
+mac-m1max	gmp	8_min	19	fork_t8	8	-	e3e82d8dfcd9b7c3	1	0.57	0.548021	52	pdOPT	-5.3812637297885203e-01	8.7	ok	0
+mac-m1max	gmp	8_min	19	fork_t8	8	-	e3e82d8dfcd9b7c3	2	0.57	0.551888	52	pdOPT	-5.3812637297885203e-01	8.7	ok	0
+mac-m1max	gmp	8_min	19	fork_t8	8	-	e3e82d8dfcd9b7c3	3	0.56	0.547890	52	pdOPT	-5.3812637297885203e-01	8.7	ok	0
+mac-m1max	gmp	10_min	74	up_t8	8	-	e3e82d8dfcd9b7c3	1	24.01	23.817360	61	pdOPT	-4.7926054387208136e-01	11.0	ok	0
+mac-m1max	gmp	10_min	74	up_t8	8	-	e3e82d8dfcd9b7c3	2	22.86	22.667178	61	pdOPT	-4.7926054387208136e-01	11.2	ok	0
+mac-m1max	gmp	10_min	74	up_t8	8	-	e3e82d8dfcd9b7c3	3	23.18	22.993595	61	pdOPT	-4.7926054387208136e-01	11.0	ok	0
+mac-m1max	gmp	10_min	74	fork_t8	8	-	e3e82d8dfcd9b7c3	1	10.24	10.017063	61	pdOPT	-4.7926054387208136e-01	13.2	ok	0
+mac-m1max	gmp	10_min	74	fork_t8	8	-	e3e82d8dfcd9b7c3	2	10.23	10.005780	61	pdOPT	-4.7926054387208136e-01	13.2	ok	0
+mac-m1max	gmp	10_min	74	fork_t8	8	-	e3e82d8dfcd9b7c3	3	13.78	13.559381	61	pdOPT	-4.7926054387208136e-01	14.6	ok	0

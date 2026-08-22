@@ -1,0 +1,13 @@
+machine	backend	problem	m	config	threads	cpuset	param_sha	repeat	wall_s	mainloop_s	iters	phase	obj	peak_rss_MB	status	rc
+expanse-epyc7742	gmp	8_min	19	fork_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	1	0.72	0.713493	52	pdOPT	-5.3812637297885203e-01	4.8	ok	0
+expanse-epyc7742	gmp	8_min	19	fork_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	2	0.72	0.716036	52	pdOPT	-5.3812637297885203e-01	4.8	ok	0
+expanse-epyc7742	gmp	8_min	19	fork_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	3	0.72	0.718280	52	pdOPT	-5.3812637297885203e-01	4.8	ok	0
+expanse-epyc7742	gmp	8_min	19	up_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	1	0.59	0.587194	52	pdOPT	-5.3812637297885203e-01	4.6	ok	0
+expanse-epyc7742	gmp	8_min	19	up_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	2	0.59	0.587351	52	pdOPT	-5.3812637297885203e-01	4.6	ok	0
+expanse-epyc7742	gmp	8_min	19	up_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	3	0.59	0.585612	52	pdOPT	-5.3812637297885203e-01	4.6	ok	0
+expanse-epyc7742	gmp	10_min	74	fork_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	1	14.84	14.704598	61	pdOPT	-4.7926054387208136e-01	12.3	ok	0
+expanse-epyc7742	gmp	10_min	74	fork_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	2	14.86	14.716508	61	pdOPT	-4.7926054387208136e-01	12.3	ok	0
+expanse-epyc7742	gmp	10_min	74	fork_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	3	14.88	14.743537	61	pdOPT	-4.7926054387208136e-01	12.3	ok	0
+expanse-epyc7742	gmp	10_min	74	up_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	1	22.98	22.869209	61	pdOPT	-4.7926054387208136e-01	11.8	ok	0
+expanse-epyc7742	gmp	10_min	74	up_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	2	23	22.889424	61	pdOPT	-4.7926054387208136e-01	11.8	ok	0
+expanse-epyc7742	gmp	10_min	74	up_t4	4	0,1,2,3	e3e82d8dfcd9b7c3	3	22.91	22.807606	61	pdOPT	-4.7926054387208136e-01	11.8	ok	0

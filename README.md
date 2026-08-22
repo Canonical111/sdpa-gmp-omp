@@ -13,11 +13,17 @@ repository for upstream's own documentation. Reported upstream; not adopted ther
 
 | | |
 |---|---|
-| **Build and run it** | [INSTALL.md](INSTALL.md) — build, verify, thread counts, every environment variable, exit status |
-| **Why it works this way** | [doc/technical.pdf](doc/technical.pdf) — mechanisms, the derivation behind the factorisation rule, the measurements, and what is *not* established |
+| **Build and run it** | [INSTALL.md](INSTALL.md) — build, verify, choose a thread count, troubleshoot |
+| **Why it works this way** | [doc/technical.pdf](doc/technical.pdf) — mechanisms, the derivation behind the factorisation rule, every environment variable, the exit-status contract, and what is *not* established |
 | **Full benchmark tables** | [BENCHMARKS.md](BENCHMARKS.md), harness in [`bench/`](bench/) |
 
-## The benchmark that matters
+## The benchmarks: best-replicated first, then the current reference
+
+Two campaigns are summarised here. The table directly below is the **best-replicated** one
+(3 repeats, 70 paired runs, zero iteration-count mismatches; 32-thread cap). The subsection after
+it is the **current reference** (full 1→128 ladder, per-family parameters, large sparse problems;
+mostly single runs). [BENCHMARKS.md](BENCHMARKS.md) is the full dossier and says which table to
+use for what.
 
 One AMD EPYC 7742 node at 32 threads, against upstream `ca110db` from a pristine clone built
 **`--enable-openmp=yes`** and swept over the same thread counts — upstream compared at *its* best,
