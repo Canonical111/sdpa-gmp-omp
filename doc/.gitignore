@@ -1,0 +1,9 @@
+# latexmk build products; technical.pdf is committed deliberately so the document
+# is readable without a TeX installation.
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.toc
+*.synctex.gz

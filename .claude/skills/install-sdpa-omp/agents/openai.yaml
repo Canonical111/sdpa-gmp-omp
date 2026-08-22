@@ -1,0 +1,4 @@
+interface:
+  display_name: "Install SDPA OpenMP"
+  short_description: "Build and verify the sdpa-*-omp SDP solvers"
+  default_prompt: "Use $install-sdpa-omp to build, verify, and optionally install this solver, then report the verified objective and how to run it with proper thread pinning."

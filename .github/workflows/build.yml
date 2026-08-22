@@ -1,0 +1,1776 @@
+name: build
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        openmp: ["yes", "no"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: no run block may approach the size at which GitHub silently refuses to start
+        run: |
+          set -e
+          # A single `run:` block has an undocumented size limit between 19.5 KB and 20.9 KB.
+          # Past it GitHub does not fail the step -- it refuses to START THE WORKFLOW: zero
+          # jobs, no logs, no annotation, only a generic "workflow file issue". The file is
+          # valid YAML by every local validator (PyYAML and Ruby psych both accept it), so
+          # nothing catches it before the push.
+          #
+          # That is worse than it sounds, because the limit binds tighter the MORE controls a
+          # step carries, and the cheapest way to turn the unexplained red X green again is to
+          # delete the assertions that triggered it -- coverage gone, CI green. This check
+          # fails loudly and names the step while there is still headroom, so the limit arrives
+          # as a legible error instead of a refusal with nothing to read.
+          #
+          # Threshold established empirically 2026-08-13, not guessed: two branches whose
+          # workflow files were byte-for-byte the same size, one with filler inside the largest
+          # step and one with the same filler elsewhere. Only the former failed to start, which
+          # rules out a file-size limit. 14 KB leaves a wide margin under the observed 19.5 KB
+          # floor; the two largest steps today are ~12.8 KB and ~10.3 KB.
+          python3 - <<'PY'
+          import sys, yaml
+          LIMIT = 14000
+          doc = yaml.safe_load(open('.github/workflows/build.yml'))
+          worst, bad = 0, []
+          for jn, job in doc['jobs'].items():
+              for st in job.get('steps', []):
+                  body = st.get('run')
+                  if not body:
+                      continue
+                  n = len(body.encode("utf-8"))  # bytes, which is what the limit is in
+                  worst = max(worst, n)
+                  if n > LIMIT:
+                      bad.append((n, jn, str(st.get('name', '<unnamed>'))[:70]))
+          for n, jn, name in sorted(bad, reverse=True):
+              print("FAIL: %s / %s is %d bytes, over the %d-byte guard"
+                    % (jn, name, n, LIMIT), file=sys.stderr)
+          if bad:
+              print("Split the step rather than trimming it. /tmp artefacts persist across"
+                    " steps in a job; shell functions do not, so redefine the helpers.",
+                    file=sys.stderr)
+              sys.exit(1)
+          print("largest run block: %d bytes (guard %d)" % (worst, LIMIT))
+          PY
+      - name: host build deps, with retries -- GitHub's apt mirrors stall intermittently
+        run: |
+          set -e
+          # 2026-08-19: three consecutive runs lost 13-160 minutes with jobs wedged on the very
+          # first `apt-get update`, while OTHER jobs in the same run sailed past it -- so it is
+          # intermittent mirror slowness, not an outage, and not our code. A bare apt call has no
+          # timeout of its own: it waits, the job waits, and the only signal is a run that never
+          # finishes. Each attempt now gets a hard timeout so a wedged mirror costs 3 minutes and
+          # a retry instead of the whole run.
+          for i in 1 2 3 4; do
+            if timeout 180 sudo apt-get update -o Acquire::Retries=3; then break; fi
+            echo "apt-get update attempt $i timed out or failed; retrying" >&2
+            [ "$i" = 4 ] && { echo "FAIL: apt-get update failed 4 times" >&2; exit 1; }
+            sleep $((i * 15))
+          done
+          for i in 1 2 3 4; do
+            if timeout 300 sudo apt-get install -y -o Acquire::Retries=3 build-essential autoconf automake libtool; then break; fi
+            echo "apt-get install attempt $i timed out or failed; retrying" >&2
+            [ "$i" = 4 ] && { echo "FAIL: apt-get install failed 4 times" >&2; exit 1; }
+            sleep $((i * 15))
+          done
+      - run: autoreconf -fi
+      - run: ./configure --enable-openmp=${{ matrix.openmp }}
+      # 2026-08-05: these two steps used to be `make || true` followed by a sed that
+      # uncommented CC inside SPOOLES's extracted Make.inc. The shipped patch left every CC
+      # assignment commented out, and SPOOLES's `.POSIX:` makes GNU make default CC to c99,
+      # which rejects -funroll-all-loops -- so `make` could never build this tree unaided and
+      # the only working recipe lived HERE, in CI, and in the install skill, in three
+      # divergent versions. It now lives in the tree: external/spooles/patches/patch-Make.inc
+      # carries the flags (including the -Wno-error= set GCC 14+ needs) and
+      # external/spooles/Makefile.am puts CC on the SPOOLES make line. A plain make must
+      # therefore work. If this step fails, that fix has regressed -- do not paper over it
+      # with a sed again, fix the patch.
+      - name: make -- the shipped recipe must build SPOOLES unaided
+        run: make -j"$(nproc)"
+      - name: SPOOLES really received the patched flags
+        run: |
+          L=external/spooles/work/spooles-build.log
+          [ -s "$L" ] || { echo "FAIL: no SPOOLES build log at $L" >&2; exit 1; }
+          grep -q -- '-funroll-all-loops'        "$L" || { echo "FAIL: patched CFLAGS absent from the SPOOLES compile lines" >&2; exit 1; }
+          grep -q -- '-Wno-error=int-conversion' "$L" || { echo "FAIL: GCC-14 rescue flags absent" >&2; exit 1; }
+          echo "$(grep -c -- '-Wno-error=int-conversion' "$L") SPOOLES compile lines carry the rescue flags"
+      - name: OpenMP linkage matches the matrix
+        run: |
+          n=$(ldd sdpa_gmp | grep -c gomp || true)
+          [ "${{ matrix.openmp }}" = yes ] && [ "$n" -ge 1 ] || { [ "${{ matrix.openmp }}" = no ] && [ "$n" -eq 0 ]; }
+      - run: ./sdpa_gmp -ds example1.dat-s -o out.result -p param.sdpa && grep objValPrimal out.result
+      - name: reject unsafe non-GMP output formats
+        run: |
+          cp param.sdpa bad-format.sdpa
+          sed -i '12s/%+50.40Fe/%+8.3e/' bad-format.sdpa
+          if ./sdpa_gmp -ds example1.dat-s -o bad-format.result -p bad-format.sdpa >bad-format.log 2>&1; then
+            echo 'unsafe double format was accepted for an mpf_t value' >&2
+            exit 1
+          fi
+          grep -q 'invalid GMP xPrint format' bad-format.log
+      - name: fatal errors must exit non-zero
+        run: |
+          set -u
+          fail() { echo "FAIL: $1" >&2; exit 1; }
+          run_rc() { set +e; "$@" >/dev/null 2>&1; echo $?; set -e; }
+          # (a) nonexistent data file
+          rc=$(run_rc ./sdpa_gmp -ds no_such_file.dat-s -o /tmp/x.out -p param.sdpa)
+          [ "$rc" -ne 0 ] || fail "missing data file returned 0"
+          # (b) unwritable output path
+          rc=$(run_rc ./sdpa_gmp -ds example1.dat-s -o /nonexistent_dir/x.out -p param.sdpa)
+          [ "$rc" -ne 0 ] || fail "unwritable output returned 0"
+          # (c) missing parameter file
+          rc=$(run_rc ./sdpa_gmp -ds example1.dat-s -o /tmp/x.out -p no_such_param.sdpa)
+          [ "$rc" -ne 0 ] || fail "missing parameter file returned 0"
+          # (d) a successful solve must still be 0
+          rc=$(run_rc ./sdpa_gmp -ds example1.dat-s -o /tmp/ok.out -p param.sdpa)
+          [ "$rc" -eq 0 ] || fail "successful solve returned $rc"
+      - name: malformed input is rejected, never silently solved
+        run: |
+          set -u
+          fail() { echo "FAIL: $1" >&2; exit 1; }
+          run_rc() { set +e; "$@" >/dev/null 2>&1; echo $?; set -e; }
+          # negative entry index: used to write out of bounds and print a full solution
+          # Line 5 is the b-vector ("48, -8, 20"); the FIRST SPARSE RECORD is line 6.
+          # Mutating line 5 made these cases fail for unrelated parse errors, so they were
+          # green while testing nothing they claim. Print the line so a future move is visible.
+          echo "fixture target line 6: $(sed -n 6p example1.dat-s)"
+          awk 'NR==6 {print "1 1 -3 -3 1.0"; next} {print}' example1.dat-s > neg-index.dat-s
+          rc=$(run_rc ./sdpa_gmp -ds neg-index.dat-s -o /tmp/neg.out -p param.sdpa)
+          [ "$rc" -ne 0 ] || fail "negative index accepted (rc=0)"
+          [ "$rc" -lt 128 ] || fail "negative index killed by signal (rc=$rc), not diagnosed"
+          ./sdpa_gmp -ds neg-index.dat-s -o /tmp/neg.out -p param.sdpa 2>neg.err || true
+          grep -qiE 'out of range|index' neg.err \
+            || fail "negative index rejected, but not for the reason claimed: $(head -1 neg.err)"
+          # positive control: the SAME file unmutated must still solve, so a fixture that
+          # breaks the file some other way cannot masquerade as a bounds test.
+          rc=$(run_rc ./sdpa_gmp -ds example1.dat-s -o /tmp/pc.out -p param.sdpa)
+          [ "$rc" -eq 0 ] || fail "positive control failed (rc=$rc): the fixture base file is broken"
+          grep -q objValPrimal /tmp/neg.out 2>/dev/null && fail "negative index produced a solution"
+          # block index out of range
+          awk 'NR==6 {print "1 99 1 1 1.0"; next} {print}' example1.dat-s > bad-block.dat-s
+          # six fields on one record: extra token must be rejected AT ITS LINE,
+          # not diagnosed as a truncation four records later (review2 finding on
+          # the earlier wrong-diagnostic behaviour)
+          awk 'NR==6 {print "0 1 1 1 -11 99"; next} {print}' example1.dat-s > six-field.dat-s
+          rc=0; ./sdpa_gmp -ds six-field.dat-s -o /tmp/sf.out -p param.sdpa 2>sf.err || rc=$?
+          [ "$rc" -eq 1 ] || fail "six-field record: rc=$rc, want 1"
+          grep -q 'line 6' sf.err || fail "six-field record not diagnosed at line 6: $(head -1 sf.err)"
+          # zero and negative header dimensions must be clean rejections, not
+          # bad_array_new_length aborts (review2 dimension hardening)
+          for dim in 0 -3; do
+            awk -v d=$dim 'NR==1 {print d; next} {print}' example1.dat-s > bad-m.dat-s
+            rc=0; ./sdpa_gmp -ds bad-m.dat-s -o /tmp/bm.out -p param.sdpa 2>bm.err || rc=$?
+            [ "$rc" -eq 1 ] || fail "m=$dim: rc=$rc, want 1 (clean rejection)"
+          done
+          rc=$(run_rc ./sdpa_gmp -ds bad-block.dat-s -o /tmp/bb.out -p param.sdpa)
+          [ "$rc" -ne 0 ] || fail "out-of-range block index accepted (rc=0)"
+          [ "$rc" -lt 128 ] || fail "bad block index killed by signal (rc=$rc), not diagnosed"
+          # comment-only file: used to loop forever writing output
+          printf '*comment only\n' > cmt.dat-s
+          set +e; timeout 20 ./sdpa_gmp -ds cmt.dat-s -o /tmp/cmt.out -p param.sdpa >/dev/null 2>&1; rc=$?; set -e
+          [ "$rc" -ne 124 ] || fail "comment-only file still hangs (timed out)"
+          [ "$rc" -ne 0 ] || fail "comment-only file returned 0"
+          # truncated file
+          head -3 example1.dat-s > trunc.dat-s
+          rc=$(run_rc ./sdpa_gmp -ds trunc.dat-s -o /tmp/tr.out -p param.sdpa)
+          [ "$rc" -ne 0 ] || fail "truncated file returned 0"
+          [ "$rc" -lt 128 ] || fail "truncated file killed by signal (rc=$rc), not diagnosed"
+
+      - name: dimension edges -- big negative LP block, oversized products, mDIM=INT_MAX (review2 §8)
+        run: |
+          set -u
+          # (a) a -50000 diagonal/LP block has linear storage and must NOT be
+          # rejected by the SDP square-size limit (validated on all three forks:
+          # solves to a phase, rc=0)
+          printf '1\n1\n-50000\n1.0\n0 1 1 1 1.0\n1 1 1 1 1.0\n' > bigneg.dat-s
+          rc=0; timeout 300 ./sdpa_gmp -ds bigneg.dat-s -o /tmp/bn.out -p param.sdpa >/dev/null 2>bn.err || rc=$?
+          [ "$rc" -eq 0 ] || { echo "FAIL: -50000 LP block rc=$rc" >&2; cat bn.err >&2; exit 1; }
+          grep -q 'phase.value' /tmp/bn.out || { echo "FAIL: no phase printed" >&2; exit 1; }
+          # (b) m * SDP_nBlock past INT_MAX must die at the checked product with
+          # a diagnostic, never overflow into a negative allocation. Size-2
+          # blocks, deliberately: size-1 blocks are stored as LP and leave
+          # SDP_nBlock = 0.
+          python3 -c 'm,nb=4300,500000; f=open("ovf.dat-s","w"); f.write("%d\n%d\n"%(m,nb)); f.write(" ".join(["2"]*nb)+"\n"); f.write(" ".join(["1.0"]*m)+"\n"); f.write("0 1 1 1 1.0\n1 1 1 1 1.0\n")'
+          rc=0; timeout 300 ./sdpa_gmp -ds ovf.dat-s -o /tmp/ov.out -p param.sdpa >/dev/null 2>ov.err || rc=$?
+          [ "$rc" -eq 1 ] || { echo "FAIL: oversized product rc=$rc, want 1" >&2; head -2 ov.err >&2; exit 1; }
+          grep -q 'allocation size overflow' ov.err || { echo "FAIL: wrong rejection reason: $(head -1 ov.err)" >&2; exit 1; }
+          # (c) mDIM = INT_MAX is rejected up front: downstream code allocates m+1
+          printf '2147483647\n1\n2\n1.0\n0 1 1 1 1.0\n' > intmax.dat-s
+          rc=0; ./sdpa_gmp -ds intmax.dat-s -o /tmp/im.out -p param.sdpa >/dev/null 2>im.err || rc=$?
+          [ "$rc" -eq 1 ] || { echo "FAIL: mDIM=INT_MAX rc=$rc, want 1" >&2; exit 1; }
+          grep -q 'not representable once incremented' im.err || { echo "FAIL: wrong diagnostic: $(head -1 im.err)" >&2; exit 1; }
+          echo "-50000 LP block solves; 4300*500000 dies at the checked product; mDIM=INT_MAX rejected"
+      - name: every changed source file carries a dated, correctly-licensed notice
+        run: |
+          set -e
+          # PUBLISHING.md and this fork's README claim this universally; it was
+          # untrue until it was checked. The checker is shared with the recipe
+          # repository (patches/check_notices.sh) and self-tests itself, so a
+          # marker-only or fail-open regression in the checker fails the job too.
+          git fetch --unshallow 2>/dev/null || true
+          bash .github/check_notices.sh --self-test
+          bash .github/check_notices.sh .
+      - name: interleaved LP/SDP initial point, dense vs sparse (review2 finding 2)
+        run: |
+          set -e
+          cd tests/initpoint_interleaved
+          ../../sdpa_gmp -ds prob.dat-s -is init_sparse.ini-s -o /tmp/ip_s.out -p ../../param.sdpa > /dev/null
+          ../../sdpa_gmp -ds prob.dat-s -id init_dense.ini   -o /tmp/ip_d.out -p ../../param.sdpa > /dev/null
+          # Compare the COMPLETE printed solution section, not a scalar
+          # shortlist (review2 §8: the offline check that proved this fix
+          # compared full solutions; CI keeps the stronger form).
+          sel() { grep -E 'objValPrimal|objValDual|phase\.value|Iteration =' "$1" || true
+                  awk '/^xVec *=/{f=1} f && !/time *=/' "$1"; }
+          sel /tmp/ip_s.out > /tmp/ip_s.sel
+          sel /tmp/ip_d.out > /tmp/ip_d.sel
+          test -s /tmp/ip_s.sel && test -s /tmp/ip_d.sel
+          grep -q '{' /tmp/ip_s.sel || { echo "FAIL: no solution rows captured" >&2; exit 1; }
+          diff /tmp/ip_s.sel /tmp/ip_d.sel \
+            || { echo "FAIL: dense and sparse spellings of the same initial point diverged" >&2; exit 1; }
+          echo "dense == sparse over the complete solution section ($(wc -l < /tmp/ip_s.sel) lines)"
+      - name: bMat gate-boundary fixtures -- the UNSET default, auto, and legacy, on divergent inputs
+        run: |
+          set -e
+          # Both policies asserted on hand-computable fixtures on both sides of every gate
+          # (tests/gen_bmat_gate_fixtures.py derives the expectations arithmetically).
+          #
+          # The 2026-08-18 promotion INVERTED what each column proves, and this comment said
+          # the old thing for one commit. Since the promotion: the AUTO column pins the derived
+          # rule -- the gate-3' skip and the fill>=aggregate invariant -- and it is the
+          # default's contract; the LEGACY column carries the expectations auto used to carry,
+          # so the released routing stays a tested contract rather than a memory. Both columns
+          # are pinned on every fixture, so a policy change cannot pass by editing one of them.
+          #
+          # 2026-08-19: the suite also now runs cells with SDPA_BMAT_MODE genuinely UNSET on the
+          # policy-divergent fixtures. Until then every cell here, and every corpus and CI check,
+          # supplied a mode explicitly, and the only unset-mode runs used inputs that route
+          # identically under both policies -- so nothing would have failed if the promoted
+          # default silently reverted to `legacy`. Verified by sabotage: with only the unset path
+          # reverted, all 27 older cells pass and just the new ones fail.
+          sh tests/bmat_gate_fixtures.sh ./sdpa_gmp /tmp/bmat_fixtures
+          # the fill mode must also be strictly parsed alongside the released three
+          rc=0; SDPA_BMAT_MODE=Fill ./sdpa_gmp -ds example1.dat-s -o /tmp/badmode.out -p param.sdpa >/dev/null 2>&1 || rc=$?
+          [ "$rc" != 0 ] || { echo "FAIL: SDPA_BMAT_MODE=Fill (wrong case) was accepted" >&2; exit 1; }
+
+      - name: bMat mode knob -- modes, cap enforcement, and strict parsing
+        run: |
+          set -e
+          run_rc() { local rc=0; "$@" >/dev/null 2>&1 || rc=$?; echo $rc; }
+          D=example1.dat-s; P=param.sdpa
+          obj() { sed -n 's/^ *objValPrimal *= *//p' "$1" | tail -1; }
+
+          # 1. every mode reaches the same answer, and the log names the path taken.
+          for mode in auto dense sparse fill legacy; do
+            SDPA_BMAT_MODE=$mode SDPA_BMAT_LOG=1 ./sdpa_gmp -ds $D -o /tmp/m_$mode.out -p $P > /tmp/m_$mode.log
+            grep -q "bMat decision" /tmp/m_$mode.log \
+              || { echo "FAIL: SDPA_BMAT_LOG printed no decision for mode=$mode" >&2; exit 1; }
+          done
+          grep -qE "^bMat decision +: DENSE \(forced by SDPA_BMAT_MODE\)"  /tmp/m_dense.log  || { echo "FAIL: dense not forced" >&2; exit 1; }
+          grep -qE "^bMat decision +: SPARSE.*forced by SDPA_BMAT_MODE"     /tmp/m_sparse.log || { echo "FAIL: sparse not forced" >&2; exit 1; }
+          for mode in auto dense sparse fill legacy; do
+            n=$(grep -c "objValPrimal" /tmp/m_$mode.out || true)
+            [ "$n" = 1 ] || { echo "FAIL: mode=$mode printed $n objectives, want exactly 1" >&2; exit 1; }
+            [ -n "$(obj /tmp/m_$mode.out)" ] || { echo "FAIL: mode=$mode objective is empty" >&2; exit 1; }
+          done
+          for mode in dense sparse fill; do
+            [ "$(obj /tmp/m_$mode.out)" = "$(obj /tmp/m_auto.out)" ] \
+              || { echo "FAIL: mode=$mode objective differs from auto" >&2; exit 1; }
+          done
+
+          # 2. DEFAULT IS SILENT. Unset, the knob must not print or change anything.
+          #    SCOPE: both arms are THIS build, so this proves logging/default-mode
+          #    invariance WITHIN the binary. It is NOT a cross-release identity check
+          #    against c2a5609 or 5179cf5 -- that needs a retained predecessor or a stored
+          #    state hash, and is done out of band on the benchmark machines.
+          #    Compare on results, not on the timing report: half the timing lines
+          #    ("Main Loop", "File Read", "updateRes") carry no "time =" to filter on.
+          sel() { grep -E 'objValPrimal|objValDual|phase\.value|Iteration =' "$1" || true
+                  awk '/^xVec *=/{f=1} f && !/time *=/' "$1"; }
+          ./sdpa_gmp -ds $D -o /tmp/quiet.out -p $P > /tmp/quiet.log 2>&1
+          # bmat_say() writes to stdout AND to the -o file, so both have to be clean.
+          # ANCHORED: the result file's ordinary timing table legitimately contains "bMat"
+          # (" Make bMat time =", " Cholesky bMat =", " sub_total_bMat ="), all indented.
+          # Every bmat_say() line starts at column 1, so "^bMat " is the diagnostic and an
+          # unanchored grep would fail on every clean run. (Caught by CI on e3aaf29.)
+          for f in /tmp/quiet.log /tmp/quiet.out; do
+            grep -qE "^bMat " "$f" && { echo "FAIL: bMat chatter in $f with SDPA_BMAT_LOG unset" >&2; exit 1; }
+          done
+          # positive control: with logging ON the same anchored pattern must MATCH, so a
+          # pattern that can never match cannot masquerade as "no chatter".
+          grep -qE "^bMat " /tmp/m_auto.log \
+            || { echo "FAIL: anchored pattern matches nothing even with SDPA_BMAT_LOG=1" >&2; exit 1; }
+          sel /tmp/quiet.out > /tmp/quiet.sel; sel /tmp/m_auto.out > /tmp/auto.sel
+          test -s /tmp/quiet.sel && grep -q '{' /tmp/quiet.sel \
+            || { echo "FAIL: no solution rows captured -- the comparison would be vacuous" >&2; exit 1; }
+          diff /tmp/quiet.sel /tmp/auto.sel \
+            || { echo "FAIL: logging changed the result" >&2; exit 1; }
+
+          # 3. THE CAP MUST BIND, NOT MERELY ANNOUNCE. This is the regression test for a
+          #    real defect: the refusal used to fall through to the automatic policy with
+          #    dense still enabled, so gate 1 re-selected dense on the very next line and
+          #    allocated exactly what the caller had just been told would be refused.
+          SDPA_BMAT_MODE=dense SDPA_BMAT_MAX_GB=0.0000001 SDPA_BMAT_LOG=1 \
+            ./sdpa_gmp -ds $D -o /tmp/cap.out -p $P > /tmp/cap.log
+          grep -q "REFUSED" /tmp/cap.log || { echo "FAIL: over-cap request was not refused" >&2; exit 1; }
+          grep -qE "^bMat decision +: DENSE" /tmp/cap.log && { echo "FAIL: cap announced then bypassed -- DENSE still selected" >&2; exit 1; }
+          grep -qE "^bMat decision +: SPARSE" /tmp/cap.log || { echo "FAIL: refusal did not land on sparse" >&2; exit 1; }
+
+          # 4. the cap binds on the AUTOMATIC path too, with no mode set at all.
+          #    First prove the UNCAPPED baseline actually selects DENSE: without this the
+          #    test passes vacuously the day the fixture becomes naturally sparse, and a
+          #    silently ignored cap would look identical to an enforced one.
+          # example1 exits at gate 1, so it selects DENSE under EVERY policy -- the premise
+          # survives the promotion, but assert it on the current default explicitly.
+          grep -qE "^bMat decision +: DENSE" /tmp/m_auto.log \
+            || { echo "FAIL: uncapped $D no longer selects DENSE -- the automatic-cap test would be vacuous" >&2; exit 1; }
+          SDPA_BMAT_MAX_GB=0.0000001 SDPA_BMAT_LOG=1 \
+            ./sdpa_gmp -ds $D -o /tmp/capauto.out -p $P > /tmp/capauto.log
+          grep -qE "^bMat decision +: DENSE" /tmp/capauto.log && { echo "FAIL: cap ignored on the automatic path" >&2; exit 1; }
+          grep -qE "^bMat decision +: SPARSE" /tmp/capauto.log || { echo "FAIL: capped automatic run did not select sparse" >&2; exit 1; }
+
+          # 4b. the cap binds under the FILL policy too (2026-08-18 review): on a fixture
+          #     that fill routes DENSE via the gate-3' skip, a tiny cap must disable dense
+          #     and land on sparse -- the safety limit is a limit on the allocation, not on
+          #     one policy's route to it. Non-vacuous: the uncapped fill run on this fixture
+          #     is asserted DENSE by the gate-boundary step above.
+          FXH=/tmp/bmat_fixtures/bmat_gate_high_dense.dat-s
+          [ -f "$FXH" ] || { echo "FAIL: high_dense fixture missing" >&2; exit 1; }
+          for capmode in auto legacy; do
+            SDPA_BMAT_MODE=$capmode SDPA_BMAT_MAX_GB=0.0000001 SDPA_BMAT_LOG=1 \
+              ./sdpa_gmp -ds $FXH -o /tmp/cap_$capmode.out -p /tmp/bmat_fixtures/param_it1.sdpa > /tmp/cap_$capmode.log
+            grep -qE "^bMat decision +: DENSE" /tmp/cap_$capmode.log && { echo "FAIL: cap ignored under mode=$capmode" >&2; exit 1; }
+            grep -qE "^bMat decision +: SPARSE" /tmp/cap_$capmode.log || { echo "FAIL: capped $capmode run did not land on sparse" >&2; exit 1; }
+          done
+
+          # 5. a generous cap must not disable dense.
+          SDPA_BMAT_MODE=dense SDPA_BMAT_MAX_GB=1024 SDPA_BMAT_LOG=1 \
+            ./sdpa_gmp -ds $D -o /tmp/capok.out -p $P > /tmp/capok.log
+          grep -qE "^bMat decision +: DENSE \(forced by SDPA_BMAT_MODE\)" /tmp/capok.log \
+            || { echo "FAIL: a cap larger than the request blocked dense" >&2; exit 1; }
+
+          # 6. VALUES WE CANNOT HONOUR ARE ERRORS, never a silent no-op. Under a permissive
+          #    parse every one of these would have meant "no cap", i.e. the opposite of the
+          #    caller's intent.
+          for bad in DENSE Dense yes 1 "" Legacy FILL autofill; do
+            rc=$(run_rc env SDPA_BMAT_MODE="$bad" ./sdpa_gmp -ds $D -o /tmp/bm.out -p $P)
+            [ "$bad" = "" ] && continue   # empty means unset, which is legitimately auto
+            [ "$rc" != 0 ] || { echo "FAIL: SDPA_BMAT_MODE='$bad' accepted" >&2; exit 1; }
+          done
+          for bad in "" 0 -1 nan inf abc 64GB 1e999; do
+            rc=$(run_rc env SDPA_BMAT_MAX_GB="$bad" ./sdpa_gmp -ds $D -o /tmp/bc.out -p $P)
+            [ "$rc" != 0 ] || { echo "FAIL: SDPA_BMAT_MAX_GB='$bad' silently accepted as no-cap" >&2; exit 1; }
+          done
+          echo "bMat knob: modes, cap enforcement on both paths, and strict parsing all hold"
+      - name: sparse Cholesky threading -- oracle identity, non-vacuous counters, strict parsing
+        run: |
+          set -e
+          run_rc() { local rc=0; "$@" >/dev/null 2>&1 || rc=$?; echo $rc; }
+          # FIXTURE: truss6, not example1. example1 is 3x3 -- its whole sparse factorisation
+          # is ~4 matched updates over ~2 loop iterations, so "at least 2 threads performed
+          # updates" is a coin toss under schedule(dynamic) and the assertion is flaky by
+          # construction. It failed exactly that way on the first run of this step. truss6 is
+          # the one SDPLIB problem that selects SPARSE on its own: 172 pivots, max target-row
+          # width 51, 79022 matched updates -- enough structure for the counters to mean
+          # something.
+          xz -dkf SDPLIB/data/truss6.dat-s.xz
+          D=SDPLIB/data/truss6.dat-s; P=param.sdpa
+          sel() { grep -aE 'objValPrimal|objValDual|phase\.value|Iteration =' "$1"
+                  awk '/^xVec *=/{f=1} f && !/time *=/' "$1"; }
+          arm() { # tag mode threads
+            SDPA_BMAT_MODE=sparse SDPA_SPCHOL_MODE=$2 SDPA_SPCHOL_LOG=1 OMP_NUM_THREADS=$3 \
+              ./sdpa_gmp -ds $D -o /tmp/sp_$1.out -p $P > /tmp/sp_$1.log 2>&1
+            sel /tmp/sp_$1.out > /tmp/sp_$1.sel
+          }
+
+          # 1. THE ORACLE. `legacy` is the frozen pre-B expression and does not call the shared
+          #    update kernel, so it is an independent check: if B and the kernel were only ever
+          #    compared to each other, an identically wrong kernel would agree with itself.
+          arm legacy legacy 1
+          test -s /tmp/sp_legacy.sel && grep -q '{' /tmp/sp_legacy.sel \
+            || { echo "FAIL: oracle produced no solution rows -- comparison would be vacuous" >&2; exit 1; }
+          arm serial serial 1
+
+          # ANCHOR THE ORACLE ROUTE. Every comparison below is meaningless if a dispatch bug
+          # quietly routed `legacy` through the shared B kernel: the arms would agree because
+          # they ran the same code, not because the code is correct. Assert the reported path.
+          # EVERY logged factorisation, not just the first. A solve runs one per iteration, and
+          # a dispatch that changed path partway through -- a gate recomputed from mutated
+          # state, say -- would be invisible to `head -1`. Collapsing to the unique set means
+          # the assertion below reads "every factorisation in this run took exactly this path".
+          path() { sed -n 's/^spchol path *: *//p' "$1" | awk '{print $1}' | sort -u | paste -sd, -; }
+          [ "$(path /tmp/sp_legacy.log)" = legacy ] \
+            || { echo "FAIL: legacy arm reported path '$(path /tmp/sp_legacy.log)', not legacy" >&2; exit 1; }
+          [ "$(path /tmp/sp_serial.log)" = serial ] \
+            || { echo "FAIL: serial arm reported path '$(path /tmp/sp_serial.log)', not serial" >&2; exit 1; }
+          diff /tmp/sp_legacy.sel /tmp/sp_serial.sel \
+            || { echo "FAIL: fix B changed the factor (differs from the pre-B oracle)" >&2; exit 1; }
+
+          # --- the OpenMP leg and the serial leg diverge here, deliberately ---
+          if [ "${{ matrix.openmp }}" = no ]; then
+            # A build without OpenMP must run the harness, report the serial path, and match
+            # the oracle -- it cannot satisfy any team-greater-than-one assertion. Asking for
+            # the parallel path here is a hard error by design, not a silent downgrade.
+            grep -q "built without OpenMP" /tmp/sp_serial.log \
+              || { echo "FAIL: serial build does not report the no-OpenMP fallback reason" >&2; exit 1; }
+            rc=$(run_rc env SDPA_BMAT_MODE=sparse SDPA_SPCHOL_MODE=parallel ./sdpa_gmp -ds $D -o /tmp/sp_np.out -p $P)
+            [ "$rc" != 0 ] || { echo "FAIL: SDPA_SPCHOL_MODE=parallel silently accepted in a build without OpenMP" >&2; exit 1; }
+            # The threshold variables are parsed at the entry point, so they are validated on
+            # this path too -- which is the whole point of moving them there.
+            for var in SDPA_OMP_MIN_SPCHOL_WORK SDPA_OMP_MIN_SPCHOL_WIDTH SDPA_OMP_MIN_SPCHOL_TOTAL; do
+              for bad in abc -5 ""; do
+                rc=$(run_rc env $var="$bad" ./sdpa_gmp -ds $D -o /tmp/sp_gb.out -p $P)
+                [ "$rc" != 0 ] || { echo "FAIL: $var='$bad' accepted in a build without OpenMP" >&2; exit 1; }
+              done
+            done
+            # This leg is built without -DSDPA_SPCHOL_TEST_HOOKS, so it must refuse them.
+            for v in SDPA_SPCHOL_FAIL_AT=5 SDPA_SPCHOL_TEAM_OVERRIDE=1 SDPA_SPCHOL_MUTATE=1 SDPA_BMAT_TEST_BREAK_INVARIANT=1; do
+              rc=$(run_rc env $v ./sdpa_gmp -ds $D -o /tmp/sp_h.out -p $P)
+              [ "$rc" != 0 ] || { echo "FAIL: production binary silently accepted $v" >&2; exit 1; }
+            done
+            # The factor digest works without OpenMP too, and is the strongest statement this
+            # leg can make: the serial path reproduces the pre-B oracle factor exactly.
+            dg() { SDPA_BMAT_MODE=sparse SDPA_SPCHOL_MODE=$1 SDPA_SPCHOL_DIGEST=1 \
+                     ./sdpa_gmp -ds $D -o /tmp/sp_d$1.out -p $P 2>&1 \
+                   | sed -n 's/^spchol factor *: *//p'; }
+            dg legacy > /tmp/sp_dg_legacy; dg serial > /tmp/sp_dg_serial
+            [ -s /tmp/sp_dg_legacy ] || { echo "FAIL: no factor digests emitted" >&2; exit 1; }
+            diff /tmp/sp_dg_legacy /tmp/sp_dg_serial \
+              || { echo "FAIL: fix B changed the FACTOR (digest differs from the oracle)" >&2; exit 1; }
+            echo "  factor digest: serial == pre-B oracle over $(wc -l < /tmp/sp_dg_legacy) factorisations"
+            # The assembly config parses on this path too now -- entry point, both builds.
+            rc=$(run_rc env SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_MODE=parallel ./sdpa_gmp -ds $D -o /tmp/a.out -p $P)
+            [ "$rc" != 0 ] || { echo "FAIL: forced-parallel assembly accepted without OpenMP" >&2; exit 1; }
+            for bad in abc -5 ""; do
+              rc=$(run_rc env SDPA_BMAT_ASM_MIN_PAIRS="$bad" ./sdpa_gmp -ds $D -o /tmp/a.out -p $P)
+              [ "$rc" != 0 ] || { echo "FAIL: SDPA_BMAT_ASM_MIN_PAIRS='$bad' accepted without OpenMP" >&2; exit 1; }
+            done
+            echo "serial leg: oracle identity holds, parallel modes refused, tunables validated, hooks absent"
+            exit 0
+          fi
+
+          # 2. Thread-count bit-identity. The factor must not depend on the team size.
+          for n in 2 4; do
+            arm par$n parallel $n
+            diff /tmp/sp_legacy.sel /tmp/sp_par$n.sel \
+              || { echo "FAIL: parallel sparse Cholesky at $n threads differs from the oracle" >&2; exit 1; }
+            [ "$(path /tmp/sp_par$n.log)" = parallel ] \
+              || { echo "FAIL: par$n reported path '$(path /tmp/sp_par$n.log)', not parallel" >&2; exit 1; }
+            # per-arm, not just par2: a team that exists is not a team that worked
+            wn=$(sed -n 's/.*workers that updated //p' /tmp/sp_par$n.log | head -1)
+            [ "${wn:-0}" -ge 2 ] \
+              || { echo "FAIL: par$n had only ${wn:-0} workers performing updates" >&2; exit 1; }
+          done
+
+          # 3. NON-VACUITY. Identical output proves nothing if the parallel branch never opened
+          #    or if one thread did all the work. CI runners are small, so require >=2 workers,
+          #    not a specific count.
+          w=$(sed -n 's/.*workers that updated //p' /tmp/sp_par2.log | head -1)
+          p=$(sed -n 's/spchol pivots *: [0-9]* total, \([0-9]*\) parallel.*/\1/p' /tmp/sp_par2.log | head -1)
+          echo "  par2: workers=$w parallel_pivots=$p"
+          [ "${w:-0}" -ge 2 ] || { echo "FAIL: fewer than 2 workers performed updates -- identity test is vacuous" >&2; exit 1; }
+          [ "${p:-0}" -ge 1 ] || { echo "FAIL: no pivot took the parallel branch" >&2; exit 1; }
+
+          # 4. Same work, different order: the update accounting must match the oracle exactly.
+          acct() { sed -n 's/spchol updates *: \([0-9]* matched, [0-9]* attempted\).*/\1/p' "$1" | head -1; }
+          [ -n "$(acct /tmp/sp_legacy.log)" ] || { echo "FAIL: no update accounting reported" >&2; exit 1; }
+          for t in serial par2 par4; do
+            [ "$(acct /tmp/sp_$t.log)" = "$(acct /tmp/sp_legacy.log)" ] \
+              || { echo "FAIL: $t did different work: $(acct /tmp/sp_$t.log) vs $(acct /tmp/sp_legacy.log)" >&2; exit 1; }
+          done
+          echo "  update accounting: $(acct /tmp/sp_legacy.log) in every arm"
+
+          # 5. Default is silent and unchanged.
+          ./sdpa_gmp -ds $D -o /tmp/sp_q.out -p $P > /tmp/sp_q.log 2>&1
+          for f in /tmp/sp_q.log /tmp/sp_q.out; do
+            grep -qE "^spchol " "$f" && { echo "FAIL: spchol chatter in $f with SDPA_SPCHOL_LOG unset" >&2; exit 1; }
+          done
+          grep -qE "^spchol " /tmp/sp_par2.log \
+            || { echo "FAIL: the anchored pattern matches nothing even with logging ON" >&2; exit 1; }
+
+          # 6. Values that cannot be honoured are errors, not silent fallbacks to auto.
+          for bad in Parallel SERIAL yes 1 auto2; do
+            rc=$(run_rc env SDPA_SPCHOL_MODE="$bad" ./sdpa_gmp -ds $D -o /tmp/sp_b.out -p $P)
+            [ "$rc" != 0 ] || { echo "FAIL: SDPA_SPCHOL_MODE='$bad' accepted" >&2; exit 1; }
+          done
+          # 6b. THE PRODUCTION `auto` PATH, above the gate, with a MIXED factorisation.
+          #     Everything above forces with SDPA_SPCHOL_MODE=parallel, which bypasses BOTH
+          #     the whole-factor gate and the per-pivot predicate -- so until this control
+          #     existed, the dispatch users actually get was never executed in CI. It could
+          #     not be reached with a corpus fixture: truss6 is the only SDPLIB problem that
+          #     selects SPARSE, its 79022 updates are below the 200000 total gate, and its
+          #     widest pivot yields work 1326 against the 20000 per-pivot gate. So the gates
+          #     are lowered instead, which tests the real code path on real data.
+          #     Chosen so SOME pivots workshare and some fall to `single`: a mixed run is the
+          #     case most likely to expose a divergence between the two branches.
+          SDPA_BMAT_MODE=sparse SDPA_SPCHOL_LOG=1 OMP_NUM_THREADS=2 \
+            SDPA_OMP_MIN_SPCHOL_TOTAL=1000 SDPA_OMP_MIN_SPCHOL_WORK=200 SDPA_OMP_MIN_SPCHOL_WIDTH=8 \
+            ./sdpa_gmp -ds $D -o /tmp/sp_auto.out -p $P > /tmp/sp_auto.log 2>&1
+          sel /tmp/sp_auto.out > /tmp/sp_auto.sel
+          [ "$(path /tmp/sp_auto.log)" = parallel ] \
+            || { echo "FAIL: auto mode above the gate reported '$(path /tmp/sp_auto.log)', not parallel" >&2; exit 1; }
+          diff /tmp/sp_legacy.sel /tmp/sp_auto.sel \
+            || { echo "FAIL: auto-dispatched parallel run differs from the oracle" >&2; exit 1; }
+          tp=$(sed -n 's/spchol pivots *: \([0-9]*\) total.*/\1/p' /tmp/sp_auto.log | head -1)
+          pp=$(sed -n 's/spchol pivots *: [0-9]* total, \([0-9]*\) parallel.*/\1/p' /tmp/sp_auto.log | head -1)
+          [ "${pp:-0}" -gt 0 ] \
+            || { echo "FAIL: auto admitted the factor but no pivot took the parallel branch" >&2; exit 1; }
+          [ "${pp:-0}" -lt "${tp:-0}" ] \
+            || { echo "FAIL: every pivot went parallel -- the single-pivot branch is untested (pp=$pp tp=$tp)" >&2; exit 1; }
+          [ "$(acct /tmp/sp_auto.log)" = "$(acct /tmp/sp_legacy.log)" ] \
+            || { echo "FAIL: auto arm did different work than the oracle" >&2; exit 1; }
+          echo "  auto above gate: $pp of $tp pivots parallel (mixed), oracle-identical"
+
+          #     Bound to LITERAL expected values, not merely "nonzero and mixed". A run that
+          #     admitted 1 pivot of 172 would satisfy an inequality while testing almost
+          #     nothing. If the fixture's ordering ever changes these numbers move together
+          #     and the failure says so, which is information rather than noise.
+          [ "$tp" = 172 ] \
+            || { echo "FAIL: fixture changed -- expected 172 pivots, got $tp" >&2; exit 1; }
+          [ "$pp" = 136 ] \
+            || { echo "FAIL: expected 136 admitted pivots under these overrides, got $pp" >&2; exit 1; }
+          [ "$(acct /tmp/sp_auto.log)" = "79022 matched, 127374 attempted" ] \
+            || { echo "FAIL: expected 79022 matched, 127374 attempted; got $(acct /tmp/sp_auto.log)" >&2; exit 1; }
+          aw=$(sed -n 's/.*workers that updated //p' /tmp/sp_auto.log | head -1)
+          [ "${aw:-0}" -ge 2 ] \
+            || { echo "FAIL: auto arm admitted pivots but only $aw worker(s) updated" >&2; exit 1; }
+
+          # 6c. THE SHIPPED DEFAULTS, in auto, must REJECT this factor and take the serial
+          #     path -- the other half of "the gate is exercised in both directions", which
+          #     until now was asserted in the docs and tested nowhere. 6b lowers all three
+          #     thresholds, so on its own it proves auto routing *with overrides*, not
+          #     admission under the configuration users actually get.
+          SDPA_BMAT_MODE=sparse SDPA_SPCHOL_LOG=1 OMP_NUM_THREADS=4 \
+            ./sdpa_gmp -ds $D -o /tmp/sp_def.out -p $P > /tmp/sp_def.log 2>&1
+          sel /tmp/sp_def.out > /tmp/sp_def.sel
+          [ "$(path /tmp/sp_def.log)" = serial ] \
+            || { echo "FAIL: shipped defaults took path '$(path /tmp/sp_def.log)', expected serial" >&2; exit 1; }
+          grep -q "total work below SDPA_OMP_MIN_SPCHOL_TOTAL" /tmp/sp_def.log \
+            || { echo "FAIL: below-gate rejection did not report the total-work reason" >&2; exit 1; }
+          dp=$(sed -n 's/spchol pivots *: [0-9]* total, \([0-9]*\) parallel.*/\1/p' /tmp/sp_def.log | head -1)
+          [ "${dp:-1}" = 0 ] \
+            || { echo "FAIL: $dp pivots went parallel under the shipped defaults" >&2; exit 1; }
+          diff /tmp/sp_legacy.sel /tmp/sp_def.sel \
+            || { echo "FAIL: default-path run differs from the oracle" >&2; exit 1; }
+          echo "  shipped defaults: rejected at the total-work gate, serial, oracle-identical"
+
+          # 6d. EVERY tunable is strictly parsed on EVERY path. The previous version tested
+          #     only _TOTAL, and only in the default mode -- which hid the fact that _WORK and
+          #     _WIDTH were parsed inside spchol_parallel() and _TOTAL behind a short circuit,
+          #     so a malformed value was silently ignored on the serial, legacy, below-gate
+          #     and forced-parallel paths. Measured against the previous tip: 32 of these 48
+          #     combinations were accepted. A validator on a conditional path is not one.
+          for mode in auto serial legacy parallel; do
+            for var in SDPA_OMP_MIN_SPCHOL_WORK SDPA_OMP_MIN_SPCHOL_WIDTH SDPA_OMP_MIN_SPCHOL_TOTAL; do
+              # +5 and 2^64 are the parser edges the earlier matrix missed: strtoull accepts a
+              # leading plus, and an overflowing value sets ERANGE rather than failing to parse.
+              for bad in abc -5 1.5 "" +5 18446744073709551616; do
+                rc=$(run_rc env SDPA_BMAT_MODE=sparse SDPA_SPCHOL_MODE=$mode $var="$bad" \
+                       OMP_NUM_THREADS=2 ./sdpa_gmp -ds $D -o /tmp/sp_gb.out -p $P)
+                [ "$rc" != 0 ] \
+                  || { echo "FAIL: mode=$mode $var='$bad' accepted" >&2; exit 1; }
+              done
+            done
+          done
+          echo "  strict parsing: all 72 mode x variable x value combinations rejected"
+
+          echo "sparse Cholesky: oracle identity, counters, gates and strict parsing all hold"
+
+      - name: test hooks absent from production, and the fill-policy invariant's error branch
+        if: matrix.openmp == 'yes'
+        run: |
+          set -e
+          # Continues the step above in the same job, so /tmp artefacts from it persist.
+          # It is a SEPARATE step because a single `run` block has a size limit of roughly
+          # 20 KB, above which GitHub refuses to start the workflow at all -- no jobs, no
+          # logs, and only a generic "workflow file issue". Verified by pushing two branches
+          # whose files were byte-for-byte the same size, one with the filler in this step and
+          # one with it elsewhere: only the former failed to start. Shell functions do not
+          # cross steps, so the helpers are redefined here.
+          run_rc() { local rc=0; "$@" >/dev/null 2>&1 || rc=$?; echo $rc; }
+          D=SDPLIB/data/truss6.dat-s; P=param.sdpa
+          sel() { grep -aE 'objValPrimal|objValDual|phase\.value|Iteration =' "$1"
+                  awk '/^xVec *=/{f=1} f && !/time *=/' "$1"; }
+          path() { sed -n 's/^spchol path *: *//p' "$1" | awk '{print $1}' | sort -u | paste -sd, -; }
+          # 7. THE TEST HOOKS ARE NOT IN THIS BINARY. Committing the fault hook made the
+          #    deadlock control reproducible and, in the same stroke, put a knob that aborts a
+          #    factorisation at a chosen pivot into every production solver. They are now
+          #    compile-gated behind -DSDPA_SPCHOL_TEST_HOOKS: the binary every other assertion
+          #    in this step runs against does not contain them, and it must REFUSE the
+          #    variables rather than ignore them -- a knob that silently does nothing has
+          #    misled whoever set it. On the previous tip SDPA_SPCHOL_FAIL_AT=5 returned 0
+          #    here, accepted and inert, because the fixture is below the gate.
+          for v in SDPA_SPCHOL_FAIL_AT=5 SDPA_SPCHOL_TEAM_OVERRIDE=1 SDPA_SPCHOL_MUTATE=1 SDPA_BMAT_TEST_BREAK_INVARIANT=1; do
+            rc=$(run_rc env SDPA_BMAT_MODE=sparse $v ./sdpa_gmp -ds $D -o /tmp/sp_h.out -p $P)
+            [ "$rc" != 0 ] \
+              || { echo "FAIL: production binary silently accepted $v" >&2; exit 1; }
+          done
+          # One translation unit and a link: the hooks binary is built alongside, used only by
+          # 8 and 9, and the production binary is restored immediately afterwards.
+          # `rm -f` the object rather than `touch` the source: make compares timestamps at
+          # one-second granularity, so touch-then-make can decide the object is already up to
+          # date and leave the previous compilation in place. That is exactly how a stale
+          # binary got within one step of being deployed earlier in this project, and here it
+          # would silently hand the wrong binary to every assertion below -- it did, on the
+          # second run of this step, which is how it was found.
+          CXX_ORIG=$(sed -n 's/^CXXFLAGS = //p' Makefile | head -1)
+          # BOTH translation units that read a test-hook macro must be invalidated. Removing
+          # only sdpa_linear.o left a stale sdpa_newton.o without the assembly hook compiled
+          # in -- the hooks binary then REFUSED its own hook, and the step died silently. The
+          # stale-object trap, again, in the step that exists to avoid it.
+          rm -f sdpa_linear.o sdpa_newton.o sdpa_chordal.o
+          make CXXFLAGS="$CXX_ORIG -DSDPA_SPCHOL_TEST_HOOKS -DSDPA_BMAT_ASM_TEST_HOOKS" >/dev/null 2>&1 \
+            || { echo "FAIL: test-hooks build failed" >&2; exit 1; }
+          cp ./sdpa_gmp /tmp/sdpa_hooks
+          rm -f sdpa_linear.o sdpa_newton.o sdpa_chordal.o
+          make >/dev/null 2>&1 || { echo "FAIL: could not restore the production binary" >&2; exit 1; }
+          # Both directions, so neither binary can be quietly the other one. A hooks build that
+          # was actually hooks-free would make section 8 fail somewhere far less legible.
+          rc=$(run_rc env SDPA_BMAT_MODE=sparse SDPA_SPCHOL_TEAM_OVERRIDE=2 /tmp/sdpa_hooks -ds $D -o /tmp/sp_h.out -p $P)
+          [ "$rc" = 0 ] \
+            || { echo "FAIL: the hooks build does not actually have the hooks (rc=$rc)" >&2; exit 1; }
+          # 10. THE FILL-POLICY INVARIANT'S ERROR BRANCH IS EXECUTABLE, not merely
+          #     source-audited: ONE watchdog-bounded injected run must exit with the solver's
+          #     exact error code and print the anchored diagnostic -- which must show the
+          #     COMPARED (injected) value and flag the injection, not report a real count as
+          #     "below" an aggregate it exceeds (the first diagnostic did exactly that).
+          FXD=/tmp/bmat_fixtures/bmat_gate_low_sparse.dat-s
+          [ -f "$FXD" ] || { echo "FAIL: fixture missing -- did the gate-boundary step run?" >&2; exit 1; }
+          # The EXPECTED exit code is 1 (rError), so the run must not execute bare under
+          # set -e -- the first version did exactly that and the step died silently on its
+          # own success condition.
+          rc=0
+          timeout 120 env SDPA_BMAT_MODE=fill SDPA_BMAT_TEST_BREAK_INVARIANT=1 /tmp/sdpa_hooks \
+            -ds $FXD -o /tmp/inv.out -p /tmp/bmat_fixtures/param_it1.sdpa > /tmp/inv.log 2>&1 || rc=$?
+          [ "$rc" = 1 ] || { echo "FAIL: injected invariant break gave rc=$rc, want the rError exit code 1" >&2; exit 1; }
+          grep -qE "ordered fill count 2699 \(TEST INJECTION ACTIVE: real count was 2700\) is below the aggregate count 2700" /tmp/inv.log \
+            || { echo "FAIL: anchored injection diagnostic missing or wrong" >&2; tail -3 /tmp/inv.log >&2; exit 1; }
+          # The advice must name a mode that ESCAPES this failure. It used to say
+          # "use SDPA_BMAT_MODE=auto", which the promotion turned into a loop: auto is now the
+          # policy whose invariant just failed. Assert both halves so the loop cannot come back.
+          grep -q "SDPA_BMAT_MODE=legacy" /tmp/inv.log \
+            || { echo "FAIL: the invariant error does not offer a policy that escapes it" >&2; exit 1; }
+          # `if` rather than `grep ... && { exit 1; }`: the latter is in fact safe under set -e
+          # (a non-final command in an && list is exempt), but a NEGATIVE assertion that reads
+          # as though it might exit on its own passing case is not worth the reader's doubt.
+          if grep -q "SDPA_BMAT_MODE=auto" /tmp/inv.log; then
+            echo "FAIL: the invariant error recommends the very policy that failed" >&2; exit 1
+          fi
+          # That the recommended escape actually WORKS on this same injected input is proven a
+          # few lines down, by the legacy run that must complete AND reproduce the released
+          # route -- so it is not re-run here.
+          # The hook follows the POLICY, not the mode name -- and after the 2026-08-18
+          # promotion `auto` IS the derived policy, so the same injection must fire under
+          # `auto` and stay inert under `legacy`. (The pre-promotion version of this check
+          # asserted the opposite for `auto` and correctly failed the first CI run after the
+          # promotion: its premise was "auto is not the fill policy".)
+          rc=0
+          timeout 120 env SDPA_BMAT_MODE=auto SDPA_BMAT_TEST_BREAK_INVARIANT=1 /tmp/sdpa_hooks \
+            -ds $FXD -o /tmp/inv2.out -p /tmp/bmat_fixtures/param_it1.sdpa > /tmp/inv2.log 2>&1 || rc=$?
+          [ "$rc" = 1 ] || { echo "FAIL: injection did not fire under the promoted default (rc=$rc)" >&2; exit 1; }
+          # legacy: the injected value is never consulted on that path, so the run completes
+          # AND reproduces the released route.
+          timeout 120 env SDPA_BMAT_MODE=legacy SDPA_BMAT_TEST_BREAK_INVARIANT=1 SDPA_BMAT_LOG=1 /tmp/sdpa_hooks \
+            -ds $FXD -o /tmp/leg.out -p /tmp/bmat_fixtures/param_it1.sdpa > /tmp/leg.log 2>&1 \
+            || { echo "FAIL: legacy path disturbed by an injection it must ignore" >&2; exit 1; }
+          grep -q "bMat decision  *: SPARSE (method 1) \[legacy chooser\]$" /tmp/leg.log \
+            || { echo "FAIL: legacy chooser did not reproduce the released route" >&2; exit 1; }
+          # 11. The RESTORED production binary refuses the injection hook -- proven on the
+          #     binary every later step runs, not assumed from the pre-hooks refusal loop.
+          rc=$(run_rc env SDPA_BMAT_TEST_BREAK_INVARIANT=1 ./sdpa_gmp -ds $D -o /tmp/inv3.out -p $P)
+          [ "$rc" != 0 ] || { echo "FAIL: restored production binary accepted the injection hook" >&2; exit 1; }
+          rc=$(run_rc env SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_TEAM_OVERRIDE=2 /tmp/sdpa_hooks -ds $D -o /tmp/sp_h.out -p $P)
+          [ "$rc" = 0 ] \
+            || { echo "FAIL: the hooks build lacks the ASSEMBLY hook (rc=$rc) -- stale object?" >&2; exit 1; }
+          rc=$(run_rc env SDPA_BMAT_MODE=sparse SDPA_SPCHOL_FAIL_AT=5 ./sdpa_gmp -ds $D -o /tmp/sp_h.out -p $P)
+          [ "$rc" != 0 ] \
+            || { echo "FAIL: restored binary still carries the test hooks" >&2; exit 1; }
+          echo "hooks refused in production, present in the hooks build; invariant error branch executes"
+
+      - name: sparse Cholesky -- late-pivot failure, one-thread region, assembly controls
+        if: matrix.openmp == 'yes'
+        run: |
+          set -e
+          # SPLIT OUT of the step above on 2026-08-18, when the run-block size guard fired at
+          # 14423 bytes against its own 14000-byte limit. The guard's comment predicts exactly
+          # the wrong response -- deleting the assertions that pushed it over -- so nothing was
+          # deleted: the block was cut in two at a section boundary. Same job, so every /tmp
+          # artefact the first half produced (notably /tmp/sdpa_hooks and /tmp/sp_par2.log) is
+          # still here; shell functions are not, so the helpers are redefined.
+          run_rc() { local rc=0; "$@" >/dev/null 2>&1 || rc=$?; echo $rc; }
+          D=SDPLIB/data/truss6.dat-s; P=param.sdpa
+          sel() { grep -aE 'objValPrimal|objValDual|phase\.value|Iteration =' "$1"
+                  awk '/^xVec *=/{f=1} f && !/time *=/' "$1"; }
+          path() { sed -n 's/^spchol path *: *//p' "$1" | awk '{print $1}' | sort -u | paste -sd, -; }
+          # The split's own premise, asserted rather than assumed: the artefacts this half reads
+          # were left by the half above. If a future edit reorders the steps, this fails here
+          # instead of silently testing nothing.
+          [ -x /tmp/sdpa_hooks ] || { echo "FAIL: /tmp/sdpa_hooks absent -- step order changed" >&2; exit 1; }
+          [ -s /tmp/sp_par2.log ] || { echo "FAIL: /tmp/sp_par2.log absent -- step order changed" >&2; exit 1; }
+          # 8. LATE-PIVOT FAILURE, under a timeout, with EXACT assertions. A failure at pivot
+          #    0 exercises none of the synchronised-termination path -- what matters is
+          #    failing AFTER genuinely parallel pivots have completed. Every assertion here
+          #    was previously an inequality: "nonzero rc" would have accepted a segfault,
+          #    "at least one parallel pivot" would have accepted a failure at pivot 1.
+          np=$(sed -n 's/spchol pivots *: \([0-9]*\) total.*/\1/p' /tmp/sp_par2.log | head -1)
+          at=$(( ${np:-0} / 2 ))
+          [ "$at" -ge 1 ] || { echo "FAIL: fixture has too few pivots to fail at a late one" >&2; exit 1; }
+          rc=0
+          SDPA_BMAT_MODE=sparse SDPA_SPCHOL_MODE=parallel SDPA_SPCHOL_LOG=1 OMP_NUM_THREADS=2 \
+            SDPA_SPCHOL_FAIL_AT=$at timeout 300 /tmp/sdpa_hooks -ds $D -o /tmp/sp_f.out -p $P > /tmp/sp_f.log 2>&1 || rc=$?
+          [ "$rc" != 124 ] || { echo "FAIL: late-pivot failure DEADLOCKED (timed out)" >&2; exit 1; }
+          [ "$rc" = 2 ] \
+            || { echo "FAIL: injected failure returned $rc, expected exactly 2" >&2; exit 1; }
+          grep -q "not positive definite :: pivot $at = -1" /tmp/sp_f.log \
+            || { echo "FAIL: diagnostic lost the pivot index or the injected value: $(grep -a 'not positive' /tmp/sp_f.log | head -1)" >&2; exit 1; }
+          ft=$(sed -n 's/spchol pivots *: \([0-9]*\) total.*/\1/p' /tmp/sp_f.log | head -1)
+          pp=$(sed -n 's/spchol pivots *: [0-9]* total, \([0-9]*\) parallel.*/\1/p' /tmp/sp_f.log | head -1)
+          fw=$(sed -n 's/.*workers that updated //p' /tmp/sp_f.log | head -1)
+          [ "$ft" = "$at" ] \
+            || { echo "FAIL: $ft pivots completed, expected exactly $at before the injected failure" >&2; exit 1; }
+          [ "$pp" = "$at" ] \
+            || { echo "FAIL: $pp parallel pivots, expected exactly $at" >&2; exit 1; }
+          [ "${fw:-0}" -ge 2 ] \
+            || { echo "FAIL: only $fw worker(s) updated in the failing run -- the sync path is untested" >&2; exit 1; }
+          echo "  late failure at pivot $at: rc=2, $pp parallel pivots by $fw workers, no deadlock"
+          rc=$(run_rc env SDPA_BMAT_MODE=sparse SDPA_SPCHOL_MODE=parallel SDPA_SPCHOL_FAIL_AT=99999 \
+                 OMP_NUM_THREADS=2 /tmp/sdpa_hooks -ds $D -o /tmp/sp_fo.out -p $P)
+          [ "$rc" != 0 ] \
+            || { echo "FAIL: a fail_at past the last pivot was accepted -- it would pass vacuously" >&2; exit 1; }
+          for bad in -1 abc 1.5; do
+            rc=$(run_rc env SDPA_SPCHOL_FAIL_AT="$bad" /tmp/sdpa_hooks -ds $D -o /tmp/sp_fb.out -p $P)
+            [ "$rc" != 0 ] || { echo "FAIL: SDPA_SPCHOL_FAIL_AT='$bad' accepted" >&2; exit 1; }
+          done
+          rc=$(run_rc env SDPA_SPCHOL_FAIL_AT="" /tmp/sdpa_hooks -ds $D -o /tmp/sp_fb.out -p $P)
+          [ "$rc" = 0 ] || { echo "FAIL: empty SDPA_SPCHOL_FAIL_AT should mean unset" >&2; exit 1; }
+
+          # 9. ONE-THREAD-REGION BRANCH COVERAGE. Named precisely: this forces the REQUEST to
+          #    one, so the region asks for one and gets one. A genuine contraction is
+          #    request-many/receive-one, which no environment setting can compel. What is
+          #    covered is the branch that fires when the team actually has one member -- which
+          #    is the branch that matters, but the wording "contraction test" overstated it.
+          #    num_threads() is a request: a runtime may hand back fewer
+          #    threads than asked for, including one. The previous design probed with a
+          #    throwaway region and dispatched on its answer, which OpenMP does not license --
+          #    consecutive regions are not promised the same team, so the probe could see two
+          #    threads and the real region one, and every pivot would then run through
+          #    `single` instead of on the serial routine. The check now lives inside the one
+          #    region that owns the team. No environment setting compels a contraction, so
+          #    without this hook the branch could only be argued for, never executed.
+          SDPA_BMAT_MODE=sparse SDPA_SPCHOL_LOG=1 OMP_NUM_THREADS=8 \
+            SDPA_OMP_MIN_SPCHOL_TOTAL=1000 SDPA_OMP_MIN_SPCHOL_WORK=200 SDPA_OMP_MIN_SPCHOL_WIDTH=8 \
+            SDPA_SPCHOL_TEAM_OVERRIDE=1 \
+            /tmp/sdpa_hooks -ds $D -o /tmp/sp_ctr.out -p $P > /tmp/sp_ctr.log 2>&1
+          sel /tmp/sp_ctr.out > /tmp/sp_ctr.sel
+          [ "$(path /tmp/sp_ctr.log)" = serial ] \
+            || { echo "FAIL: one-thread team reported path '$(path /tmp/sp_ctr.log)', not serial" >&2; exit 1; }
+          grep -q "team has one thread; ran the serial routine" /tmp/sp_ctr.log \
+            || { echo "FAIL: the one-thread team was not reported as the reason" >&2; exit 1; }
+          cp_=$(sed -n 's/spchol pivots *: [0-9]* total, \([0-9]*\) parallel.*/\1/p' /tmp/sp_ctr.log | head -1)
+          [ "${cp_:-1}" = 0 ] \
+            || { echo "FAIL: $cp_ pivots took the parallel branch under a one-thread team" >&2; exit 1; }
+          diff /tmp/sp_legacy.sel /tmp/sp_ctr.sel \
+            || { echo "FAIL: one-thread-team run differs from the oracle" >&2; exit 1; }
+          echo "  one-thread region: dispatched to the serial routine, oracle-identical"
+
+          # Assembly one-thread-region branch: the override forces the REQUEST to one after
+          # admission, the region must do no work, and execution must fall out to the plain
+          # serial loop -- with the result still identical. No environment setting can compel
+          # a real contraction, so this hook is the only deterministic coverage of the branch.
+          rm -f /tmp/asm_ctr.bin
+          SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_MODE=parallel SDPA_BMAT_ASM_MIN_PAIRS=1 \
+            SDPA_BMAT_ASM_TEAM_OVERRIDE=1 SDPA_BMAT_ASM_LOG=1 SDPA_BMAT_ASM_DUMP=/tmp/asm_ctr.bin \
+            OMP_NUM_THREADS=4 /tmp/sdpa_hooks -ds $D -o /tmp/asm_ctr.out -p $P > /tmp/asm_ctr.log 2>&1
+          grep -q 'runtime gave one thread; ran serially' /tmp/asm_ctr.log \
+            || { echo "FAIL: one-thread region did not report the serial fallback" >&2; exit 1; }
+          if grep -q 'bmat asm done' /tmp/asm_ctr.log; then
+            echo "FAIL: a one-thread region reported parallel completion" >&2; exit 1
+          fi
+          [ -s /tmp/asm_ctr.bin ] || { echo "FAIL: contraction arm produced no stream" >&2; exit 1; }
+          # ...and the fallback's ARITHMETIC must match, not merely exist: compare against a
+          # serial reference from the same binary.
+          rm -f /tmp/asm_ctr_ref.bin
+          SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_MODE=serial SDPA_BMAT_ASM_DUMP=/tmp/asm_ctr_ref.bin \
+            /tmp/sdpa_hooks -ds $D -o /tmp/asm_ctr_ref.out -p $P >/dev/null 2>&1
+          [ -s /tmp/asm_ctr_ref.bin ] || { echo "FAIL: contraction reference stream empty" >&2; exit 1; }
+          cmp /tmp/asm_ctr.bin /tmp/asm_ctr_ref.bin \
+            || { echo "FAIL: one-thread fallback built a DIFFERENT bMat than serial" >&2; exit 1; }
+          rc=$(run_rc env SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_TEAM_OVERRIDE=1 ./sdpa_gmp -ds $D -o /tmp/x.out -p $P)
+          [ "$rc" != 0 ] || { echo "FAIL: production binary accepted the assembly team override" >&2; exit 1; }
+          echo "  assembly one-thread region: no work inside, serial fallback outside, hook refused in production"
+          echo "sparse Cholesky: hooks absent, failure path and one-thread region all hold"
+
+      - name: parallel solve -- forward pass is bit-identical, backward is reproducible
+        if: matrix.openmp == 'yes'
+        run: |
+          set -e
+          xz -dkf SDPLIB/data/truss6.dat-s.xz
+          D=SDPLIB/data/truss6.dat-s; P=param.sdpa
+          # MIN_ROW is lowered because truss6's mean row is 27 and the shipped gate wants 256.
+          # The gate exists to avoid a SLOWDOWN; this step tests IDENTITY, which the gate has
+          # no bearing on, and without lowering it every arm would quietly take the serial
+          # path and the comparison would be vacuous.
+          G="SDPA_SOLVE_MIN_ROW=1 SDPA_SOLVE_MIN_ROWS=1"
+          arm() { rm -f /tmp/sv_$1.bin
+                  local rc=0
+                  env $G "${@:4}" OMP_NUM_THREADS=$3 SDPA_BMAT_MODE=sparse \
+                    SDPA_SOLVE_MODE=$2 SDPA_SOLVE_DUMP=/tmp/sv_$1.bin \
+                    SDPA_SOLVE_PROFILE=1 SDPA_SOLVE_PROFILE_OUT=/tmp/sv_$1.prof \
+                    ./sdpa_gmp -ds $D -o /tmp/sv_$1.out -p $P > /tmp/sv_$1.log 2>&1 || rc=$?
+                  [ "$rc" = 0 ] || { echo "FAIL: solve arm $1 exited $rc" >&2; return 1; }; }
+          pf() { sed -n "s/.* $2=\([0-9-]*\).*/\1/p" /tmp/sv_$1.prof | head -1; }
+          arm ser serial 1
+          arm fwd auto   8
+          arm ch2 auto   2 SDPA_SOLVE_BACKWARD=auto SDPA_SOLVE_CHUNKS=4 SDPA_SOLVE_MIN_CHUNK=8
+          arm ch8 auto   8 SDPA_SOLVE_BACKWARD=auto SDPA_SOLVE_CHUNKS=4 SDPA_SOLVE_MIN_CHUNK=8
+          # NON-VACUITY BEFORE ANY COMPARISON, twice over. cmp on two empty files succeeds, so
+          # size is checked first; and a dump written by a run that never took the parallel
+          # path would compare equal for the wrong reason, so the profile is read back and the
+          # arm must show the path it was supposed to exercise actually ran.
+          for a in ser fwd ch2 ch8; do
+            sz=$(stat -c%s /tmp/sv_$a.bin 2>/dev/null || echo 0)
+            [ "${sz:-0}" -gt 100000 ] \
+              || { echo "FAIL: solve dump $a is ${sz:-0} bytes, too small to compare" >&2; exit 1; }
+          done
+          [ "$(pf fwd par_fwd_calls)" -gt 0 ] \
+            || { echo "FAIL: the forward arm never ran parallel; identity would be vacuous" >&2; exit 1; }
+          [ "$(pf ch8 par_bwd_calls)" -gt 0 ] \
+            || { echo "FAIL: the backward arm never ran parallel; determinism would be vacuous" >&2; exit 1; }
+          [ "$(pf ser par_fwd_calls)" = 0 ] \
+            || { echo "FAIL: SDPA_SOLVE_MODE=serial still threaded the forward pass" >&2; exit 1; }
+          # Phase 1's whole claim.
+          cmp /tmp/sv_ser.bin /tmp/sv_fwd.bin \
+            || { echo "FAIL: threaded forward pass is NOT bit-identical to serial" >&2; exit 1; }
+          # Phase 2 trades identity for reproducibility, so BOTH halves are asserted: the
+          # answer must not depend on the team size, and it must actually have been reordered
+          # -- an arm that changed nothing would pass the determinism check while testing none
+          # of the chunking it exists to test.
+          cmp /tmp/sv_ch2.bin /tmp/sv_ch8.bin \
+            || { echo "FAIL: chunked backward differs between 2 and 8 threads" >&2; exit 1; }
+          if cmp -s /tmp/sv_ser.bin /tmp/sv_ch2.bin; then
+            echo "FAIL: chunking changed nothing, so the determinism check proved nothing" >&2; exit 1
+          fi
+          echo "solve: forward bit-identical, backward thread-count-independent and genuinely reordered"
+
+      - name: parallel solve -- gates are strictly parsed and forced modes are refused
+        if: matrix.openmp == 'yes'
+        run: |
+          set -e
+          xz -dkf SDPLIB/data/truss6.dat-s.xz
+          D=SDPLIB/data/truss6.dat-s; P=param.sdpa
+          rc_of() { local rc=0; env "$@" ./sdpa_gmp -ds $D -o /tmp/g.out -p $P >/dev/null 2>&1 || rc=$?; echo $rc; }
+          bad=0
+          # A knob that silently reverts to its default on a typo measures the wrong
+          # configuration and then looks like a result. Every one of these must be REFUSED.
+          # -5 is here because strtoull accepts a leading minus and wraps it to ULLONG_MAX-4
+          # with errno unset -- a real defect this project already shipped once.
+          # Every knob, and the INTEGER BOUNDARIES. A gate that accepts any uint64_t and is
+          # then cast to int or long long can land negative -- which for MIN_CHUNK makes every
+          # row chunkable and for MIN_ROW inverts the admission test. The earlier list covered
+          # neither the boundaries nor MIN_ROWS / MIN_CHUNK / MAX_TEAM at all.
+          for v in "SDPA_SOLVE_MODE=paralel" "SDPA_SOLVE_MODE=" "SDPA_SOLVE_MODE=SERIAL" \
+                   "SDPA_SOLVE_BACKWARD=yes" "SDPA_SOLVE_BACKWARD=" \
+                   "SDPA_SOLVE_MIN_ROW=-5" "SDPA_SOLVE_MIN_ROW=12x" "SDPA_SOLVE_MIN_ROW=" \
+                   "SDPA_SOLVE_CHUNKS=1" "SDPA_SOLVE_CHUNKS=99999" "SDPA_SOLVE_CHUNKS=-2" \
+                   "SDPA_SOLVE_MIN_ROWS=-1" "SDPA_SOLVE_MIN_ROWS=x" \
+                   "SDPA_SOLVE_MIN_CHUNK=-1" "SDPA_SOLVE_MIN_CHUNK=2147483648" \
+                   "SDPA_SOLVE_MAX_TEAM=-1" "SDPA_SOLVE_MAX_TEAM=65537" \
+                   "SDPA_SOLVE_MIN_ROW=9223372036854775808" \
+                   "SDPA_SOLVE_MIN_ROW=18446744073709551615" \
+                   "SDPA_SOLVE_MAX_TEAM=18446744073709551615" \
+                   "SDPA_SOLVE_MIN_CHUNK=18446744073709551616"; do
+            if [ "$(rc_of $v)" = 0 ]; then echo "FAIL: accepted $v" >&2; bad=1; fi
+          done
+          # The shipped defaults must still run. A step that only proves things are rejected
+          # would pass just as well if the binary rejected everything.
+          [ "$(rc_of SDPA_SOLVE_LOG=1)" = 0 ] || { echo "FAIL: shipped defaults were refused" >&2; bad=1; }
+          # A forced mode that cannot be honoured is refused, never quietly downgraded to
+          # serial -- silently serialising a forced-parallel arm is how the bMat scratch bug
+          # hid. truss6 at one thread cannot thread anything, so this must be non-zero.
+          [ "$(rc_of SDPA_SOLVE_MODE=parallel OMP_NUM_THREADS=1)" != 0 ] \
+            || { echo "FAIL: forced-parallel accepted a single thread instead of refusing" >&2; bad=1; }
+          [ "$(rc_of SDPA_SOLVE_BACKWARD=parallel OMP_NUM_THREADS=1)" != 0 ] \
+            || { echo "FAIL: forced-parallel backward accepted a single thread" >&2; bad=1; }
+          # The test hook must not exist in a production build.
+          [ "$(rc_of SDPA_SOLVE_TEAM_OVERRIDE=2)" != 0 ] \
+            || { echo "FAIL: production binary accepted the solve team override" >&2; bad=1; }
+          [ "$bad" = 0 ] || exit 1
+          echo "solve: 21 malformed settings refused, defaults run, forced modes refuse rather than downgrade"
+
+      - name: parallel solve -- one-member teams, and the dense route's contract
+        if: matrix.openmp == 'yes'
+        run: |
+          set -e
+          xz -dkf SDPLIB/data/truss6.dat-s.xz
+          D=SDPLIB/data/truss6.dat-s; P=param.sdpa
+          G="SDPA_SOLVE_MIN_ROW=1 SDPA_SOLVE_MIN_ROWS=1"
+          # /tmp/sdpa_hooks is built by the sparse-Cholesky step above, which also restores the
+          # production binary afterwards. Depending on an earlier step's artefact is what broke
+          # this workflow once before, so: fail loudly rather than silently skipping.
+          test -x /tmp/sdpa_hooks || { echo "FAIL: /tmp/sdpa_hooks missing" >&2; exit 1; }
+          # The hook exists to drive the kernels with a team of ONE. It could not: it was
+          # applied and then rejected by the pre-region team<2 gate, so the in-region
+          # one-member path had no test while a comment claimed otherwise. It now bypasses
+          # that gate, and this step is what proves the branch is reachable and correct.
+          arm() { rm -f /tmp/o_$1.bin
+                  env $G "${@:2}" SDPA_SOLVE_DUMP=/tmp/o_$1.bin SDPA_SOLVE_PROFILE=1 \
+                      SDPA_SOLVE_PROFILE_OUT=/tmp/o_$1.prof OMP_NUM_THREADS=8 \
+                      /tmp/sdpa_hooks -ds $D -o /tmp/o_$1.out -p $P >/dev/null 2>&1 \
+                    || { echo "FAIL: arm $1 exited non-zero" >&2; return 1; }; }
+          pf() { sed -n "s/.* $2=\([0-9-]*\).*/\1/p" /tmp/o_$1.prof | head -1; }
+          arm ser SDPA_SOLVE_MODE=serial
+          arm one SDPA_SOLVE_TEAM_OVERRIDE=1
+          # It must have RUN, and must have done no threaded work.
+          [ "$(pf one par_fwd_calls)" = 0 ] \
+            || { echo "FAIL: the one-member arm reported threaded work" >&2; exit 1; }
+          cmp /tmp/o_ser.bin /tmp/o_one.bin \
+            || { echo "FAIL: forward on a one-member team is not bit-identical" >&2; exit 1; }
+          # Backward on one member must give the CHUNKED answer, not the legacy one. This is
+          # the property the README advertises and that a contracting runtime used to break.
+          C="SDPA_SOLVE_BACKWARD=auto SDPA_SOLVE_CHUNKS=4 SDPA_SOLVE_MIN_CHUNK=8"
+          arm c1 $C SDPA_SOLVE_TEAM_OVERRIDE=1
+          arm c8 $C
+          cmp /tmp/o_c1.bin /tmp/o_c8.bin \
+            || { echo "FAIL: chunked backward differs between a one-member and an 8-member team" >&2; exit 1; }
+          if cmp -s /tmp/o_ser.bin /tmp/o_c1.bin; then
+            echo "FAIL: the chunked arms equal serial, so this proved nothing" >&2; exit 1
+          fi
+          # A forced mode must refuse when the team contracts, not downgrade in silence.
+          rc=0; env $G SDPA_SOLVE_MODE=parallel SDPA_SOLVE_TEAM_OVERRIDE=1 \
+                  /tmp/sdpa_hooks -ds $D -o /tmp/x.out -p $P >/dev/null 2>&1 || rc=$?
+          [ "$rc" != 0 ] \
+            || { echo "FAIL: forced parallel accepted a one-member team" >&2; exit 1; }
+          D2=example1.dat-s
+          # The DENSE route parses the same knobs. It used not to: solve_cfg() was reached only
+          # from the sparse overload, so a typo or a forced mode was silently ignored whenever
+          # bMat went dense -- one of the solver's two routes.
+          for v in SDPA_SOLVE_MODE=paralel SDPA_SOLVE_CHUNKS=1 SDPA_SOLVE_MODE=parallel; do
+            rc=0; env $v ./sdpa_gmp -ds $D2 -o /tmp/x.out -p $P >/dev/null 2>&1 || rc=$?
+            [ "$rc" != 0 ] || { echo "FAIL: dense route accepted $v" >&2; exit 1; }
+          done
+          ./sdpa_gmp -ds $D2 -o /tmp/x.out -p $P >/dev/null 2>&1 \
+            || { echo "FAIL: dense route rejects its own defaults" >&2; exit 1; }
+          # The SHIPPED one-thread routes, not just the test hook. Review round 2 found the
+          # hook fix left both of these still taking the legacy backward loop, so the
+          # reproducibility promise was false on exactly the configurations a user can reach.
+          # The baseline OMP_NUM_THREADS goes FIRST, before $setting. Written the other way
+          # round -- env ... OMP_NUM_THREADS=1 ... OMP_NUM_THREADS=8 -- the LAST assignment
+          # wins, so the arm named OMP1 ran on eight threads and agreed with the eight-thread
+          # reference for the most trivial reason available. It passed, and tested nothing.
+          for spec in "OMP1:OMP_NUM_THREADS=1" "CAP1:SDPA_SOLVE_MAX_TEAM=1"; do
+            lab=${spec%%:*}; setting=${spec#*:}
+            rm -f /tmp/o_$lab.bin
+            env OMP_NUM_THREADS=8 $G $C $setting SDPA_SOLVE_LOG=1 \
+                SDPA_SOLVE_DUMP=/tmp/o_$lab.bin \
+                ./sdpa_gmp -ds $D -o /tmp/x.out -p $P > /tmp/o_$lab.log 2>&1 \
+              || { echo "FAIL: shipped arm $lab exited non-zero" >&2; exit 1; }
+            # ...and PROVE the arm ran one-member rather than trusting the variable to have
+            # taken effect. The missing witness is precisely what let the vacuous form pass.
+            grep -q "backward FIXED-CHUNK.*(team 1)" /tmp/o_$lab.log \
+              || { echo "FAIL: $lab did not run a one-member fixed-chunk backward pass:" >&2
+                   grep -m1 "^solve:" /tmp/o_$lab.log >&2 || true; exit 1; }
+            cmp /tmp/o_$lab.bin /tmp/o_c8.bin \
+              || { echo "FAIL: $lab did not produce the fixed-chunk answer -- the chunk count" >&2
+                   echo "      is supposed to be independent of the team size" >&2; exit 1; }
+          done
+          if cmp -s /tmp/o_ser.bin /tmp/o_OMP1.bin; then
+            echo "FAIL: the one-thread arm equals serial, so it took the legacy loop" >&2; exit 1
+          fi
+          # A non-uniform xVec precision must be REFUSED. CI mutated a factor element's
+          # precision and never a vector one, so this branch had no control.
+          rm -f /tmp/o_vp.prof
+          env $G SDPA_SOLVE_MUTATE_VECPREC=1 SDPA_SOLVE_PROFILE=1 \
+              SDPA_SOLVE_PROFILE_OUT=/tmp/o_vp.prof OMP_NUM_THREADS=8 \
+              /tmp/sdpa_hooks -ds $D -o /tmp/x.out -p $P >/dev/null 2>&1 || true
+          v=$(sed -n "s/.* par_fwd_calls=\([0-9-]*\).*/\1/p" /tmp/o_vp.prof | head -1)
+          [ "${v:-1}" = 0 ] \
+            || { echo "FAIL: a non-uniform vector precision still took the threaded path" >&2; exit 1; }
+          rc=0; env SDPA_SOLVE_MUTATE_VECPREC=1 ./sdpa_gmp -ds $D2 -o /tmp/x.out -p $P >/dev/null 2>&1 || rc=$?
+          [ "$rc" != 0 ] || { echo "FAIL: production binary accepted the vecprec hook" >&2; exit 1; }
+          echo "solve: shipped one-thread routes give the chunked answer; vector-precision refusal controlled"
+
+      - name: Make bMat assembly -- threaded, and the assembled matrix is identical
+        if: matrix.openmp == 'yes'
+        run: |
+          set -e
+          run_rc() { local rc=0; "$@" >/dev/null 2>&1 || rc=$?; echo $rc; }
+          # Extract the fixture here rather than relying on an earlier step having left it:
+          # this step failed once for exactly that reason, and a missing fixture should never
+          # be able to look like a code failure.
+          xz -dkf SDPLIB/data/truss6.dat-s.xz
+          D=SDPLIB/data/truss6.dat-s; P=param.sdpa
+          sel() { grep -aE 'objValPrimal|objValDual|phase\.value|Iteration =' "$1"
+                  awk '/^xVec *=/{f=1} f && !/time *=/' "$1"; }
+          # The bMat ASSEMBLY is compared, not the factor. Finite-precision Cholesky is not
+          # injective: two different assembled matrices can round to the same factor, so
+          # "the factor matched" cannot establish that a threaded assembly built the same
+          # matrix. SDPA_BMAT_ASM_DUMP emits the assembled matrix before factorisation.
+          asm() { rm -f /tmp/asm_$1.bin
+                  local rc=0
+                  SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_MODE=$2 OMP_NUM_THREADS=$3 \
+                    SDPA_BMAT_ASM_MIN_PAIRS=1 SDPA_BMAT_ASM_DUMP=/tmp/asm_$1.bin \
+                    ./sdpa_gmp -ds $D -o /tmp/asm_$1.out -p $P > /tmp/asm_$1.log 2>&1 || rc=$?
+                  [ "$rc" = 0 ] || { echo "FAIL: assembly arm $1 exited $rc" >&2; return 1; }
+                  sel /tmp/asm_$1.out > /tmp/asm_$1.sel; }
+          asm ser serial 1
+          sz=$(stat -c%s /tmp/asm_ser.bin 2>/dev/null || echo 0)
+          # NON-VACUITY FIRST: cmp on two empty files reports success, so an all-arms-crash
+          # would otherwise read as perfect agreement.
+          [ "${sz:-0}" -gt 100000 ] \
+            || { echo "FAIL: assembled stream is $sz bytes -- comparison would be vacuous" >&2; exit 1; }
+          for t in 2 4; do
+            asm p$t parallel $t
+            [ "$(stat -c%s /tmp/asm_p$t.bin)" = "$sz" ] \
+              || { echo "FAIL: parallel@$t assembled stream has a different length" >&2; exit 1; }
+            cmp /tmp/asm_ser.bin /tmp/asm_p$t.bin \
+              || { echo "FAIL: parallel@$t built a DIFFERENT bMat" >&2; exit 1; }
+            diff /tmp/asm_ser.sel /tmp/asm_p$t.sel \
+              || { echo "FAIL: parallel@$t solution differs" >&2; exit 1; }
+          done
+          echo "  assembled bMat: serial == parallel@2 == parallel@4, $sz bytes"
+          # It must actually have threaded, or the comparison above proves nothing about
+          # concurrency. The log names the route per block.
+          n=$(grep -c 'bmat asm block .* -> parallel' /tmp/asm_p4.route 2>/dev/null || echo 0)
+          SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_MODE=parallel SDPA_BMAT_ASM_MIN_PAIRS=1 \
+            SDPA_BMAT_ASM_LOG=1 OMP_NUM_THREADS=4 ./sdpa_gmp -ds $D -o /tmp/asm_r.out -p $P \
+            2>&1 | grep 'bmat asm block' > /tmp/asm_p4.route || true
+          n=$(grep -c -- '-> parallel' /tmp/asm_p4.route || echo 0)
+          [ "${n:-0}" -ge 2 ] \
+            || { echo "FAIL: only $n blocks took the parallel route" >&2; cat /tmp/asm_p4.route >&2; exit 1; }
+          echo "  route: $n blocks assembled in parallel"
+          # The serial route must not enter an OpenMP region at all, and a one-thread team
+          # must fall out to it rather than running the body inside a team of one.
+          SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_MODE=parallel SDPA_BMAT_ASM_MIN_PAIRS=1 \
+            SDPA_BMAT_ASM_LOG=1 OMP_NUM_THREADS=1 ./sdpa_gmp -ds $D -o /tmp/asm_1.out -p $P \
+            2>&1 | grep -q 'team would be one' \
+            || { echo "FAIL: a one-thread run did not report the serial fallback reason" >&2; exit 1; }
+          echo "  one thread: falls back to the serial route outside any OpenMP region"
+          # Strict parsing, on every path.
+          for bad in abc -5 1.5 "" +5 18446744073709551616; do
+            for v in SDPA_BMAT_ASM_MIN_PAIRS SDPA_BMAT_ASM_SCRATCH_MB; do
+              rc=$(run_rc env SDPA_BMAT_MODE=sparse $v="$bad" ./sdpa_gmp -ds $D -o /tmp/asm_b.out -p $P)
+              [ "$rc" != 0 ] || { echo "FAIL: $v='$bad' accepted" >&2; exit 1; }
+            done
+          done
+          for bad in Parallel SERIAL yes 1 auto2; do
+            rc=$(run_rc env SDPA_BMAT_ASM_MODE="$bad" ./sdpa_gmp -ds $D -o /tmp/asm_b.out -p $P)
+            [ "$rc" != 0 ] || { echo "FAIL: SDPA_BMAT_ASM_MODE='$bad' accepted" >&2; exit 1; }
+          done
+          # Default AUTO, both directions. Forced modes prove the kernel; auto is what users
+          # run. Above the gate (lowered) it must actually execute in parallel -- proven by
+          # the post-region "done" line, whose worker count reflects execution rather than
+          # intent; the route line prints at admission and cannot distinguish a contracted
+          # team. Below the gate (shipped default 4000; truss6's largest block has 78 pairs)
+          # every block must stay serial.
+          rm -f /tmp/asm_auto.bin
+          SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_MIN_PAIRS=1 SDPA_BMAT_ASM_LOG=1 \
+            SDPA_BMAT_ASM_DUMP=/tmp/asm_auto.bin OMP_NUM_THREADS=4 \
+            ./sdpa_gmp -ds $D -o /tmp/asm_auto.out -p $P > /tmp/asm_auto.log 2>&1
+          grep -E 'bmat asm done .*workers ([2-9]|[1-9][0-9])' /tmp/asm_auto.log | head -1 | grep -q . \
+            || { echo "FAIL: auto above gate never had two workers do pairs" >&2; exit 1; }
+          # Every executed block's totals must be exact: "groups a/b pairs c/d" with a=b, c=d.
+          bad=$(sed -n 's/.*groups \([0-9]*\)\/\([0-9]*\) pairs \([0-9]*\)\/\([0-9]*\)$/\1 \2 \3 \4/p' /tmp/asm_auto.log \
+                | awk '$1!=$2 || $3!=$4' | head -1)
+          [ -z "$bad" ] || { echo "FAIL: a block lost or doubled work: $bad" >&2; exit 1; }
+          # A huge but valid scratch budget must be DEFINED behaviour (it used to hit a
+          # double-to-int cast outside int's range) and must not shrink the team.
+          rm -f /tmp/asm_max.bin
+          SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_MODE=parallel SDPA_BMAT_ASM_MIN_PAIRS=1 \
+            SDPA_BMAT_ASM_SCRATCH_MB=18446744073709551615 SDPA_BMAT_ASM_LOG=1 OMP_NUM_THREADS=4 \
+            SDPA_BMAT_ASM_DUMP=/tmp/asm_max.bin \
+            ./sdpa_gmp -ds $D -o /tmp/asm_max.out -p $P > /tmp/asm_max.log 2>&1
+          grep -q 'bmat asm done' /tmp/asm_max.log \
+            || { echo "FAIL: UINT64_MAX scratch budget prevented parallel execution" >&2; exit 1; }
+          cmp /tmp/asm_ser.bin /tmp/asm_max.bin \
+            || { echo "FAIL: UINT64_MAX scratch budget changed the bMat" >&2; exit 1; }
+          cmp /tmp/asm_ser.bin /tmp/asm_auto.bin \
+            || { echo "FAIL: auto-dispatched assembly built a DIFFERENT bMat" >&2; exit 1; }
+          rm -f /tmp/asm_dflt.bin
+          SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_LOG=1 SDPA_BMAT_ASM_DUMP=/tmp/asm_dflt.bin \
+            OMP_NUM_THREADS=4 ./sdpa_gmp -ds $D -o /tmp/asm_dflt.out -p $P > /tmp/asm_dflt.log 2>&1
+          if grep -q -- '-> parallel' /tmp/asm_dflt.log; then
+            echo "FAIL: shipped MIN_PAIRS gate admitted truss6" >&2; exit 1
+          fi
+          cmp /tmp/asm_ser.bin /tmp/asm_dflt.bin \
+            || { echo "FAIL: below-gate auto built a DIFFERENT bMat" >&2; exit 1; }
+          echo "  auto: above-gate parallel with >=2 workers, below-gate serial, both identical"
+
+          # The F2 group-state fix, exercised on a fixture that REACHES it. At default KAPPA
+          # the consuming branch (formula F2 with a dense Aj beyond a group's first pair) is
+          # structurally unreachable -- measured zero across all 93 SDPLIB problems -- but
+          # KAPPA is a supported flag (-k), and at k=0.3 with tied dense constraints the
+          # highest-index one takes F2 and its group holds multiple dense-Aj pairs. Before the
+          # fix that read an indeterminate bool; under -ftrivial-auto-var-init=pattern it took
+          # the stale-scratch branch deterministically.
+          cen=$(SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_CENSUS=exit \
+                  ./sdpa_gmp -ds tests/f2dense.dat-s -o /tmp/f2.out -p $P -k 0.3 2>&1 \
+                | sed -n 's/.*f2dense_after_first=\([0-9]*\).*/\1/p')
+          [ "${cen:-0}" -ge 1 ] \
+            || { echo "FAIL: f2dense fixture no longer reaches the F2 dense-Aj branch (got $cen)" >&2; exit 1; }
+          # The fixture's solve BREAKS DOWN after the first assembly (rc=2) -- deliberate
+          # tolerance, not an accident: the assembly has already run and dumped by then, and
+          # a breakdown is deterministic and fast. What must hold: both arms exit the SAME
+          # way, and their assembled streams are non-empty and identical.
+          rm -f /tmp/f2s.bin /tmp/f2p.bin
+          r1=0; SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_MODE=serial SDPA_BMAT_ASM_DUMP=/tmp/f2s.bin \
+            ./sdpa_gmp -ds tests/f2dense.dat-s -o /tmp/f2s.out -p $P -k 0.3 >/dev/null 2>&1 || r1=$?
+          r2=0; SDPA_BMAT_MODE=sparse SDPA_BMAT_ASM_MODE=parallel SDPA_BMAT_ASM_MIN_PAIRS=1 \
+            SDPA_BMAT_ASM_LOG=1 SDPA_BMAT_ASM_DUMP=/tmp/f2p.bin OMP_NUM_THREADS=2 \
+            ./sdpa_gmp -ds tests/f2dense.dat-s -o /tmp/f2p.out -p $P -k 0.3 > /tmp/f2p.log 2>&1 || r2=$?
+          # EXACTLY the intended breakdown, in both arms: "equal exits" alone would also
+          # accept two identical crashes.
+          [ "$r1" = 2 ] && [ "$r2" = 2 ] \
+            || { echo "FAIL: f2dense arms exited $r1/$r2, expected the deterministic rc=2" >&2; exit 1; }
+          # Real parallel F2 coverage: two workers, and every group and pair accounted for.
+          grep -qE 'bmat asm done .*actual 2 workers 2 groups 3/3 pairs 6/6' /tmp/f2p.log \
+            || { echo "FAIL: f2dense parallel arm did not run 2 workers over 3/3 groups, 6/6 pairs" >&2;
+                 grep 'bmat asm' /tmp/f2p.log >&2; exit 1; }
+          [ -s /tmp/f2s.bin ] || { echo "FAIL: f2dense produced no stream" >&2; exit 1; }
+          cmp /tmp/f2s.bin /tmp/f2p.bin \
+            || { echo "FAIL: F2 dense-Aj assembly differs between serial and parallel" >&2; exit 1; }
+          echo "  F2 fix: fixture reaches the branch (count=$cen), serial == parallel"
+          echo "assembly: identical bMat, proven execution, auto both ways, F2 branch reached, strict parsing"
+
+      - name: sparse Cholesky -- the factor-level oracle and its negative controls
+        if: matrix.openmp == 'yes'
+        run: |
+          set -e
+          # Third step in this sequence, for the same reason as the second: a single `run`
+          # block has a size limit past which GitHub refuses to start the workflow at all. The
+          # guard in this job caught this split at 14,115 bytes against its 14,000 threshold --
+          # which is the guard doing exactly what it was added for, well before the real cliff.
+          # /tmp artefacts persist across steps; shell functions do not.
+          run_rc() { local rc=0; "$@" >/dev/null 2>&1 || rc=$?; echo $rc; }
+          D=SDPLIB/data/truss6.dat-s; P=param.sdpa
+          sel() { grep -aE 'objValPrimal|objValDual|phase\.value|Iteration =' "$1"
+                  awk '/^xVec *=/{f=1} f && !/time *=/' "$1"; }
+          # 10. THE FACTOR-LEVEL ORACLE. Everything above compares the PRINTED SOLUTION --
+          #     objective, phase, iteration count, xVec. That is not the claim being made:
+          #     two factorisations can differ deep in the mantissa and still print the same
+          #     17 digits, so identical selected output is consistent with a factor that
+          #     changed, and the whole argument for B and C is that it does not. This digests
+          #     the factor itself -- structure, column indices, and every element's precision,
+          #     sign, exponent and exact base-16 mantissa -- for EVERY factorisation in the
+          #     solve, and requires all four arms to agree.
+          # The comparison is on the CANONICAL STREAM ITSELF, byte for byte, not on equality
+          # of a 64-bit hash. SDPA_SPCHOL_DIGEST_DUMP appends a length-framed record per
+          # factorisation; two runs agree only if every byte agrees. The printed fingerprint is
+          # kept as a cheap diagnostic and is described as one.
+          # The solver's status is CAPTURED, not piped away. Sending it straight into sed
+          # replaces the solver's exit code with sed's, so a crashed run would look clean and
+          # its empty dump would then compare equal to another empty dump.
+          fdig() { rm -f /tmp/fd_$1.bin
+                   local rc=0
+                   SDPA_BMAT_MODE=sparse SDPA_SPCHOL_MODE=$2 SDPA_SPCHOL_DIGEST=1 \
+                     SDPA_SPCHOL_DIGEST_DUMP=/tmp/fd_$1.bin \
+                     OMP_NUM_THREADS=$3 ${4:-./sdpa_gmp} -ds $D -o /tmp/fd_$1.out -p $P \
+                     > /tmp/fd_$1.raw 2>&1 || rc=$?
+                   [ "$rc" = 0 ] || { echo "FAIL: arm $1 exited $rc" >&2; return 1; }
+                   sed -n 's/^spchol factor *: *//p' /tmp/fd_$1.raw > /tmp/fd_$1.dig
+                   sel /tmp/fd_$1.out > /tmp/fd_$1.sel
+                   # The dump on disk must be exactly the stream the run said it wrote.
+                   local want got
+                   want=$(awk -F'[ ,]+' '/spchol factor/{for(i=1;i<=NF;i++) if($i=="stream") s+=$(i-1)} END{print s+0}' /tmp/fd_$1.raw)
+                   got=$(stat -c%s /tmp/fd_$1.bin 2>/dev/null || echo 0)
+                   [ "$want" = "$got" ] \
+                     || { echo "FAIL: arm $1 reported $want stream bytes but wrote $got" >&2; return 1; }; }
+          fdig legacy legacy 1
+          nf=$(wc -l < /tmp/fd_legacy.dig)
+          nb=$(stat -c%s /tmp/fd_legacy.bin 2>/dev/null || echo 0)
+          # NON-VACUITY FIRST. cmp(1) on two empty files reports success, so without this an
+          # all-arms-crash would read as perfect agreement -- the exact trap this step exists
+          # to close, and one that nearly got reported as a pass during development.
+          # PINNED, not ">= 2": a shortened trajectory would satisfy an inequality while
+          # comparing far less than the fixture is supposed to cover.
+          [ "${nf:-0}" = 55 ] \
+            || { echo "FAIL: $nf factorisations, expected exactly 55 for this fixture" >&2; exit 1; }
+          [ "${nb:-0}" -gt 100000 ] \
+            || { echo "FAIL: canonical stream is $nb bytes -- comparison would be vacuous" >&2; exit 1; }
+          for a in serial parallel; do
+            for t in 1 2 4; do
+              [ "$a" = serial ] && [ "$t" != 1 ] && continue
+              fdig ${a}$t $a $t
+              [ "$(wc -l < /tmp/fd_${a}$t.dig)" = "$nf" ] \
+                || { echo "FAIL: $a@$t produced a different NUMBER of factorisations" >&2; exit 1; }
+              cmp /tmp/fd_legacy.bin /tmp/fd_${a}$t.bin \
+                || { echo "FAIL: $a@$t changed the FACTOR (canonical stream differs from the pre-B oracle)" >&2; exit 1; }
+            done
+          done
+          echo "  factor stream: legacy == serial == parallel@2 == parallel@4, $nb bytes over $nf factorisations"
+
+          # 10b. THE NEGATIVE CONTROL, without which the above is equally consistent with a
+          #      digest that cannot tell anything apart. Perturb one diagonal of the finished
+          #      factor by ~1 ulp: the digest must change. Measured on this fixture, the
+          #      printed solution does NOT change -- which is the concrete demonstration that
+          #      solution-level comparison could never have closed this gate.
+          SDPA_BMAT_MODE=sparse SDPA_SPCHOL_MODE=serial SDPA_SPCHOL_DIGEST=1 SDPA_SPCHOL_MUTATE=1 \
+            OMP_NUM_THREADS=1 /tmp/sdpa_hooks -ds $D -o /tmp/fd_mut.out -p $P 2>&1 \
+            | sed -n 's/^spchol factor *: *//p' > /tmp/fd_mut.dig
+          sel /tmp/fd_mut.out > /tmp/fd_mut.sel
+          [ -s /tmp/fd_mut.dig ] || { echo "FAIL: mutated run emitted no digest" >&2; exit 1; }
+          # EVERY record must change, not merely "the files differ somewhere". A comparator
+          # that noticed one factorisation in 55 would pass a weaker test while being nearly
+          # blind, and the claim being made is about all of them.
+          [ "$(wc -l < /tmp/fd_mut.dig)" = "$nf" ] \
+            || { echo "FAIL: mutated run has a different factorisation count" >&2; exit 1; }
+          ch=$(paste <(sed 's/.*fingerprint //' /tmp/fd_serial1.dig) \
+                     <(sed 's/.*fingerprint //' /tmp/fd_mut.dig) | awk '$1!=$2{n++} END{print n+0}')
+          [ "$ch" = "$nf" ] \
+            || { echo "FAIL: 1-ulp perturbation changed only $ch of $nf factorisations" >&2; exit 1; }
+          if diff -q /tmp/fd_serial1.sel /tmp/fd_mut.sel >/dev/null; then
+            echo "  mutation: all $ch of $nf records changed; the printed solution did not move at all"
+          else
+            echo "  mutation: all $ch of $nf records changed (the printed solution moved too here)"
+          fi
+
+          # 10c. THE PRECISION INVARIANT'S REJECTING BRANCH. The scan covers every live element,
+          #      but until now nothing proved it can actually refuse: an invariant check with no
+          #      negative fixture is asserted, not tested. MUTATE=2 changes one element's
+          #      precision after a factorisation, so the next one must refuse to start.
+          rc=$(run_rc env SDPA_BMAT_MODE=sparse SDPA_SPCHOL_MODE=serial SDPA_SPCHOL_MUTATE=2 \
+                 OMP_NUM_THREADS=1 /tmp/sdpa_hooks -ds $D -o /tmp/fd_p.out -p $P)
+          [ "$rc" != 0 ] \
+            || { echo "FAIL: a mixed-precision factor was accepted" >&2; exit 1; }
+          SDPA_BMAT_MODE=sparse SDPA_SPCHOL_MODE=serial SDPA_SPCHOL_MUTATE=2 OMP_NUM_THREADS=1 \
+            /tmp/sdpa_hooks -ds $D -o /tmp/fd_p.out -p $P 2>&1 | grep -q "has precision" \
+            || { echo "FAIL: mixed precision rejected without naming the element" >&2; exit 1; }
+          rc=$(run_rc env SDPA_BMAT_MODE=sparse SDPA_SPCHOL_MUTATE=3 /tmp/sdpa_hooks -ds $D -o /tmp/fd_p.out -p $P)
+          [ "$rc" != 0 ] || { echo "FAIL: SDPA_SPCHOL_MUTATE=3 accepted" >&2; exit 1; }
+          echo "  precision invariant: rejects a mutated element and names it"
+
+          echo "factor oracle: exact stream identity, mutation and precision controls all hold"
+      - name: late numerical failure is reported as PARTIAL, not success (review2 §8.2)
+        run: |
+          set -e
+          xz -dkf SDPLIB/data/gpp100.dat-s.xz
+          # At this fork's DEFAULT parameters, gpp100's Schur complement stops
+          # factoring in the Mehrotra predictor at iteration 61. Before the
+          # failure-policy fix this run printed the last iterate and exited 0,
+          # indistinguishable from success; it must now exit 3 with an explicit
+          # PARTIAL contract and the last valid iterate printed.
+          rc=0; ./sdpa_gmp -ds SDPLIB/data/gpp100.dat-s -o /tmp/hard.out -p param.sdpa > /dev/null 2>/tmp/hard.err || rc=$?
+          [ "$rc" -eq 3 ] || { echo "FAIL: expected rc=3 (partial), got $rc" >&2; cat /tmp/hard.err >&2; exit 1; }
+          grep -q 'solveStatus = PARTIAL' /tmp/hard.out || { echo "FAIL: no machine-readable PARTIAL status" >&2; exit 1; }
+          grep -q '^xVec' /tmp/hard.out || { echo "FAIL: the last valid iterate was not printed" >&2; exit 1; }
+          # This fork's iteration number IS pinned -- verified portable on x86
+          # Actions as well as arm64. (qd's is not, and says so where it lives:
+          # quad-double trajectories move across architectures.) The internal
+          # invariant is asserted alongside it, so a future output-format change
+          # cannot satisfy the grep while meaning something else.
+          fi=$(sed -n 's/^failureIteration = *//p' /tmp/hard.out | head -1)
+          it=$(sed -n 's/^ *Iteration = *//p' /tmp/hard.out | head -1)
+          echo "observed: failureIteration=$fi, reported Iteration=$it"
+          [ "$fi" = "61" ] || { echo "FAIL: failureIteration $fi, expected 61" >&2; exit 1; }
+          [ "$fi" = "$it" ] || { echo "FAIL: failureIteration $fi != reported Iteration $it" >&2; exit 1; }
+          # positive control: a clean solve still exits 0 with no PARTIAL marker
+          rc=0; ./sdpa_gmp -ds example1.dat-s -o /tmp/ok.out -p param.sdpa > /dev/null || rc=$?
+          [ "$rc" -eq 0 ] || { echo "FAIL: positive control rc=$rc, expected 0" >&2; exit 1; }
+          grep -q '^xVec' /tmp/ok.out
+          if grep -q 'solveStatus' /tmp/ok.out; then echo "FAIL: success run carries a solveStatus marker" >&2; exit 1; fi
+          echo "gpp100: rc=3 PARTIAL at iteration 61; example1: rc=0 clean"
+      - name: 1-thread and 8-thread results are identical (determinism guarantee)
+        if: matrix.openmp == 'yes'
+        run: |
+          set -euo pipefail
+          OMP_NUM_THREADS=1 ./sdpa_gmp -ds example1.dat-s -o t1.out -p param.sdpa >/dev/null
+          OMP_NUM_THREADS=8 ./sdpa_gmp -ds example1.dat-s -o t8.out -p param.sdpa >/dev/null
+          # Select the solution-bearing content rather than excluding timing lines: an
+          # exclusion list has to know every timer format the solver can print and rots
+          # silently when one is added. Two parts: the scalar convergence fields, and the
+          # WHOLE final solution section from "xVec =" onward -- matrix continuation rows
+          # are indented, so a "^{" pattern would compare only each block's first row.
+          # The timing block follows the matrices, hence the time= drop.
+          sel() {
+            grep -E 'objValPrimal|objValDual|phase\.value|Iteration =|relative gap|feas\.error' "$1" || true
+            awk '/^xVec *=/{f=1} f && !/time *=/' "$1"
+          }
+          # Write to regular files: `test -s <(...)` is always false, because process
+          # substitution exposes a pipe and a pipe reports size zero.
+          sel t1.out > t1.selected
+          sel t8.out > t8.selected
+          test -s t1.selected || { echo "FAIL: selector matched nothing" >&2; exit 1; }
+          grep -q '^  *{' t1.selected || { echo "FAIL: no indented matrix rows captured" >&2; exit 1; }
+          diff -u t1.selected t8.selected || { echo "FAIL: 1 vs 8 threads differ" >&2; exit 1; }
+          # Positive control: perturbing an indented continuation row MUST be detected.
+          # (awk, not `sed '0,/re/'` -- that range form is a GNU extension and is a silent
+          # no-op under BSD sed, which would make this control vacuous on some runners.)
+          awk 'BEGIN{done=0} /^[[:space:]]+\{/ && !done {print "  {9.99e+99"; done=1; next} {print}' \
+            t1.selected > t1.mutated
+          if diff -q t1.selected t1.mutated >/dev/null; then
+            echo "FAIL: positive control did not mutate anything -- the check is vacuous" >&2; exit 1
+          fi
+          if diff -q t1.mutated t8.selected >/dev/null; then
+            echo "FAIL: comparison cannot detect a changed matrix row" >&2; exit 1
+          fi
+# Job C -- -ftrivial-auto-var-init=zero vs =pattern must give identical output.
+# This is the method that found the iMlaenv block-size bug. ASan cannot see an
+# in-bounds uninitialised stack read; this can.
+# Verified 2026-08-04 on pi (gcc 13.3.0) on all three forks at their dev tips.
+  auto-var-init:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: host build deps, with retries -- GitHub's apt mirrors stall intermittently
+        run: |
+          set -e
+          # 2026-08-19: three consecutive runs lost 13-160 minutes with jobs wedged on the very
+          # first `apt-get update`, while OTHER jobs in the same run sailed past it -- so it is
+          # intermittent mirror slowness, not an outage, and not our code. A bare apt call has no
+          # timeout of its own: it waits, the job waits, and the only signal is a run that never
+          # finishes. Each attempt now gets a hard timeout so a wedged mirror costs 3 minutes and
+          # a retry instead of the whole run.
+          for i in 1 2 3 4; do
+            if timeout 180 sudo apt-get update -o Acquire::Retries=3; then break; fi
+            echo "apt-get update attempt $i timed out or failed; retrying" >&2
+            [ "$i" = 4 ] && { echo "FAIL: apt-get update failed 4 times" >&2; exit 1; }
+            sleep $((i * 15))
+          done
+          for i in 1 2 3 4; do
+            if timeout 300 sudo apt-get install -y -o Acquire::Retries=3 build-essential autoconf automake libtool; then break; fi
+            echo "apt-get install attempt $i timed out or failed; retrying" >&2
+            [ "$i" = 4 ] && { echo "FAIL: apt-get install failed 4 times" >&2; exit 1; }
+            sleep $((i * 15))
+          done
+      - name: compiler must support the flag at all
+        run: |
+          printf 'int main(){return 0;}\n' > /tmp/a.c
+          gcc -ftrivial-auto-var-init=pattern -c /tmp/a.c -o /tmp/a.o \
+            || { echo "FAIL: toolchain lacks -ftrivial-auto-var-init (needs GCC >= 12)" >&2; exit 1; }
+
+      - name: build twice, zero and pattern
+        run: |
+          set -e
+          build() {   # $1 = zero|pattern, $2 = destination dir
+            rm -rf "$2"; mkdir -p "$2"; tar -c --exclude=.git --exclude="$2" . | tar -x -C "$2"
+            ( cd "$2"
+              autoreconf -fi >/dev/null 2>&1 || true          # dd / gmp
+              ./configure --enable-openmp=yes >/dev/null      # qd: --with-qd-includedir=... --with-qd-libdir=...
+              F="-O2 -funroll-all-loops -ftrivial-auto-var-init=$1"
+              make -j"$(nproc)" CXXFLAGS="$F" CFLAGS="$F" > build.log 2>&1 || true
+              MK=$(find . -path '*spooles*' -name Make.inc | head -1)
+              if [ -n "$MK" ] && [ ! -x ./sdpa_gmp ]; then
+                sed -i 's|^# CC = gcc|  CC = gcc|' "$MK"; d=$(dirname "$MK")
+                ( cd "$d" && find . -name '*.o' -delete && rm -f spooles.a && make global -f makefile >/dev/null 2>&1 \
+                  && { cp spooles.a ../../../i/SPOOLES/lib/libspooles.a 2>/dev/null || cp spooles.a ./libspooles.a; } )
+                make -j"$(nproc)" CXXFLAGS="$F" CFLAGS="$F" >> build.log 2>&1
+              fi
+              # Flags MUST go on the make line. sdpa-gmp-omp's configure.ac does
+              # AC_SUBST([CXXFLAGS],[""]) and discards configure-time flags entirely;
+              # measured, that made this whole job vacuous on gmp (0 of 3671 compile
+              # lines carried the flag, yet the two binaries still differed because the
+              # build path is embedded -- so "binaries differ" is NOT a valid check).
+              c=$(grep -E ' -c ' build.log | grep -c -- '-ftrivial-auto-var-init' || true)
+              [ "${c:-0}" -ge 10 ] || { echo "FAIL: only $c compile lines carried the flag" >&2; exit 1; }
+              grep -E ' -c ' build.log | grep -- 'sdpa_newton.cpp' | grep -q -- '-ftrivial-auto-var-init' \
+                || { echo "FAIL: first-party TUs did not get the flag" >&2; exit 1; }
+            )
+          }
+          build zero    build-zero
+          build pattern build-pattern
+
+      - name: identical output, or an uninitialised read has been found
+        run: |
+          set -u
+          for p in SDPLIB/data/control1 SDPLIB/data/theta1 SDPLIB/data/truss5 SDPLIB/data/arch0 SDPLIB/data/gpp100 SDPLIB/data/mcp100; do
+            [ -f "$p.dat-s.xz" ] && xz -dkf "$p.dat-s.xz"
+          done
+          sel() {   # same selector as the committed determinism step
+            grep -E 'objValPrimal|objValDual|phase\.value|Iteration =|relative gap|feas\.error' "$1" || true
+            awk '/^xVec *=/{f=1} f && !/time *=/' "$1"
+          }
+          # problems whose DEFAULT-parameter run ends PARTIAL (exit 3) in this fork
+          PARTIAL_SET="SDPLIB/data/gpp100"
+          : > z.sel; : > p.sel
+          for d in example1 SDPLIB/data/control1 SDPLIB/data/theta1 SDPLIB/data/truss5 \
+                   SDPLIB/data/arch0 SDPLIB/data/gpp100 SDPLIB/data/mcp100; do
+            f="$d.dat-s"; test -f "$f" || { echo "FAIL: scheduled problem $f missing" >&2; exit 1; }
+            # rc is captured and COMPARED: an intended PARTIAL (exit 3 -- at this
+            # fork's default parameters gpp100 ends there by design) must not
+            # kill the step, but a zero-vs-pattern rc disagreement is exactly
+            # the uninitialised-read signal this job exists to catch.
+            # Remove BOTH outputs first (review2 §10.2): these names were reused
+            # across problems, so a run that produced no output left the previous
+            # problem's file in place and the selectors compared a stale solution.
+            rm -f zo.out po.out
+            rz=0; OMP_NUM_THREADS=2 ./build-zero/sdpa_gmp    -ds "$f" -o zo.out -p param.sdpa >/dev/null 2>&1 || rz=$?
+            rp=0; OMP_NUM_THREADS=2 ./build-pattern/sdpa_gmp -ds "$f" -o po.out -p param.sdpa >/dev/null 2>&1 || rp=$?
+            # Each rc must be the status EXPECTED FOR THIS PROBLEM, not merely
+            # equal to the other and not merely "0 or 3" (review2 §13.3: a blanket
+            # 0|3 lets an ordinary problem regress to PARTIAL in both instrumented
+            # builds and still pass). gpp100 is this fork's only default-parameter PARTIAL case in this schedule.
+            case " $PARTIAL_SET " in *" $d "*) want=3 ;; *) want=0 ;; esac
+            for r in "$rz" "$rp"; do
+              [ "$r" = "$want" ] || { echo "FAIL: $f exited $r, expected $want" >&2; exit 1; }
+            done
+            [ "$rz" = "$rp" ] || { echo "FAIL: $f rc differs, zero=$rz pattern=$rp" >&2; exit 1; }
+            # and each run must have produced a real solution section of its own
+            for o in zo.out po.out; do
+              test -s "$o" || { echo "FAIL: $f produced no $o" >&2; exit 1; }
+              sel "$o" | grep -q '{' || { echo "FAIL: $f $o has no solution rows" >&2; exit 1; }
+            done
+            echo "== $f rc=$rz" >> z.sel; sel zo.out >> z.sel
+            echo "== $f rc=$rp" >> p.sel; sel po.out >> p.sel
+          done
+          test -s z.sel || { echo "FAIL: selector matched nothing" >&2; exit 1; }
+          grep -q '^  *{' z.sel || { echo "FAIL: no indented matrix rows captured" >&2; exit 1; }
+          # Positive control: a changed continuation row must be detectable.
+          awk 'BEGIN{d=0} /^[[:space:]]+\{/ && !d {print "  {9.99e+99"; d=1; next} {print}' z.sel > z.mut
+          diff -q z.sel z.mut >/dev/null && { echo "FAIL: control mutated nothing -- check is vacuous" >&2; exit 1; }
+          diff -q z.mut p.sel >/dev/null && { echo "FAIL: comparison cannot detect a changed row" >&2; exit 1; }
+          diff -u z.sel p.sel || {
+            echo "FAIL: zero and pattern disagree -- there is a live uninitialised read." >&2
+            echo "Bisect it: build everything =zero, then recompile subsets with =pattern" >&2
+            echo "until the answer moves; the subset that moves it holds the read." >&2
+            exit 1; }
+  warnings:
+    # Promote the two warning classes this project has actually shipped bugs in:
+    #   -Wreturn-type   -- rdpotf2_ fell off the end of a non-void function, and eight
+    #                      functions in qd's mpack/Mutils.cpp compiled to empty bodies.
+    #   -Wuninitialized -- four SOCP_sp_* locals were passed to C.initialize() unassigned.
+    # NOTE the two-stage build. Promotion CANNOT be tree-wide: -Werror=uninitialized also
+    # promotes -Wmaybe-uninitialized, and `make CXXFLAGS=...` reaches every bundled
+    # dependency. On gmp the bundled GMP's own configure probes the compiler with a program
+    # that reads an uninitialised variable and would fail with a message pointing nowhere
+    # near the cause; on dd, SPOOLES QRreduce.c and sort.c become hard errors. So: build
+    # normally first, then recompile ONLY the first-party TUs with the strict flags.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: host build deps, with retries -- GitHub's apt mirrors stall intermittently
+        run: |
+          set -e
+          # 2026-08-19: three consecutive runs lost 13-160 minutes with jobs wedged on the very
+          # first `apt-get update`, while OTHER jobs in the same run sailed past it -- so it is
+          # intermittent mirror slowness, not an outage, and not our code. A bare apt call has no
+          # timeout of its own: it waits, the job waits, and the only signal is a run that never
+          # finishes. Each attempt now gets a hard timeout so a wedged mirror costs 3 minutes and
+          # a retry instead of the whole run.
+          for i in 1 2 3 4; do
+            if timeout 180 sudo apt-get update -o Acquire::Retries=3; then break; fi
+            echo "apt-get update attempt $i timed out or failed; retrying" >&2
+            [ "$i" = 4 ] && { echo "FAIL: apt-get update failed 4 times" >&2; exit 1; }
+            sleep $((i * 15))
+          done
+          for i in 1 2 3 4; do
+            if timeout 300 sudo apt-get install -y -o Acquire::Retries=3 build-essential autoconf automake libtool clang; then break; fi
+            echo "apt-get install attempt $i timed out or failed; retrying" >&2
+            [ "$i" = 4 ] && { echo "FAIL: apt-get install failed 4 times" >&2; exit 1; }
+            sleep $((i * 15))
+          done
+      - name: normal build first (third-party deps must not see the strict flags)
+        run: |
+          set -e
+          autoreconf -fi >/dev/null 2>&1 || true
+          ./configure --enable-openmp=no >/dev/null
+          make -j"$(nproc)" >build.log 2>&1 || true
+          MK=$(find . -path '*spooles*' -name Make.inc | head -1)
+          if [ -n "$MK" ] && [ ! -x ./sdpa_gmp ]; then
+            sed -i 's|^# CC = gcc|  CC = gcc|' "$MK"; d=$(dirname "$MK")
+            ( cd "$d" && find . -name '*.o' -delete && rm -f spooles.a && make global -f makefile >/dev/null 2>&1 \
+              && { cp spooles.a ../../../i/SPOOLES/lib/libspooles.a 2>/dev/null || cp spooles.a ./libspooles.a; } )
+            make -j"$(nproc)" >>build.log 2>&1
+          fi
+          test -x ./sdpa_gmp
+      - name: recompile first-party translation units with the classes promoted to errors
+        run: |
+          set -e
+          CXX=${{ matrix.cc == 'gcc' && 'g++' || 'clang++' }}
+          F="-O2 -funroll-all-loops -Werror=return-type -Werror=uninitialized"
+          touch sdpa_*.cpp
+          make -j"$(nproc)" CXX="$CXX" CXXFLAGS="$F" 2>&1 | tee strict.log
+          # The flags MUST actually be on the compile lines. sdpa-gmp-omp's configure.ac
+          # does AC_SUBST([CXXFLAGS],[""]) and silently discards configure-time flags, so an
+          # earlier draft of this job passed while testing nothing at all. Comparing binary
+          # checksums does NOT detect that -- the build path is embedded and they differ
+          # regardless. Grepping the compile lines is the only sound check.
+          n=$(grep -c -- '-Werror=return-type' strict.log || true)
+          [ "$n" -ge 1 ] || { echo "FAIL: strict flags never reached a compile line" >&2; exit 1; }
+          echo "strict flags present on $n compile line(s)"
+
+  portable-build:
+    # C13, 2026-08-05. Until this date sdpa-gmp had NO supported portable or reproducible
+    # build, for two reasons that compounded:
+    #   configure.ac:143-144  AC_SUBST([CFLAGS],[""])  AC_SUBST([CXXFLAGS],[""])
+    #       -- discarded every flag passed to configure, including the $pthread_cflags
+    #          appended four lines above, leaving `CXXFLAGS = ` in the generated Makefile;
+    #   Makefile.am           AM_CXXFLAGS = -O2 -march=native ...
+    #       -- the only remaining source of flags, and unremovable because of the above.
+    # Together: you could not add a flag and you could not take -march=native away, so every
+    # binary was pinned to the ISA of whatever machine built it.
+    #
+    # This job is the regression guard, and it greps COMPILE LINES. It deliberately does not
+    # check that a flag changes the binary: the build path is embedded in the objects, so two
+    # binaries differ whether or not the flag was applied, and an earlier job in this repo
+    # passed for months on exactly that false signal (0 of 3671 compile lines carried the
+    # flag under test).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: host build deps, with retries -- GitHub's apt mirrors stall intermittently
+        run: |
+          set -e
+          # 2026-08-19: three consecutive runs lost 13-160 minutes with jobs wedged on the very
+          # first `apt-get update`, while OTHER jobs in the same run sailed past it -- so it is
+          # intermittent mirror slowness, not an outage, and not our code. A bare apt call has no
+          # timeout of its own: it waits, the job waits, and the only signal is a run that never
+          # finishes. Each attempt now gets a hard timeout so a wedged mirror costs 3 minutes and
+          # a retry instead of the whole run.
+          for i in 1 2 3 4; do
+            if timeout 180 sudo apt-get update -o Acquire::Retries=3; then break; fi
+            echo "apt-get update attempt $i timed out or failed; retrying" >&2
+            [ "$i" = 4 ] && { echo "FAIL: apt-get update failed 4 times" >&2; exit 1; }
+            sleep $((i * 15))
+          done
+          for i in 1 2 3 4; do
+            if timeout 300 sudo apt-get install -y -o Acquire::Retries=3 build-essential autoconf automake libtool; then break; fi
+            echo "apt-get install attempt $i timed out or failed; retrying" >&2
+            [ "$i" = 4 ] && { echo "FAIL: apt-get install failed 4 times" >&2; exit 1; }
+            sleep $((i * 15))
+          done
+      - run: autoreconf -fi
+      - name: portable build -- user CXXFLAGS reach the compile line, -march=native is gone
+        run: |
+          set -e
+          ./configure --enable-openmp=no --disable-march-native CXXFLAGS=-DPORTABLE_BUILD_PROBE=1 > cfg1.log
+          grep -q '^CXXFLAGS = .*PORTABLE_BUILD_PROBE' Makefile \
+            || { echo 'FAIL: configure discarded CXXFLAGS -- the AC_SUBST([CXXFLAGS],[""]) defect is back' >&2; exit 1; }
+          make -j"$(nproc)" > build1.log 2>&1 || { tail -40 build1.log >&2; exit 1; }
+          n=$(grep -E ' -c ' build1.log | grep -c -- 'PORTABLE_BUILD_PROBE' || true)
+          [ "${n:-0}" -ge 10 ] || { echo "FAIL: only $n compile lines carried the user flag" >&2; exit 1; }
+          m=$(grep -E ' -c ' build1.log | grep -c -- '-march=native' || true)
+          [ "${m:-0}" -eq 0 ] || { echo "FAIL: -march=native survived --disable-march-native on $m compile line(s)" >&2; exit 1; }
+          ./sdpa_gmp -ds example1.dat-s -o portable.result -p param.sdpa
+          grep objValPrimal portable.result
+          echo "portable build: $n compile lines carried the user flag, 0 carried -march=native"
+      - name: the DEFAULT build still carries -march=native (the default was not flipped)
+        run: |
+          set -e
+          make distclean > /dev/null 2>&1 || true
+          ./configure --enable-openmp=no > cfg2.log
+          grep -q 'accepts -march=native... yes' cfg2.log \
+            || { echo 'FAIL: the -march=native probe did not run or did not pass' >&2; exit 1; }
+          make -j"$(nproc)" > build2.log 2>&1 || { tail -40 build2.log >&2; exit 1; }
+          m=$(grep -E ' -c ' build2.log | grep -c -- '-march=native' || true)
+          [ "${m:-0}" -ge 10 ] \
+            || { echo "FAIL: default build lost -march=native ($m compile lines) -- that is a performance change nobody measured" >&2; exit 1; }
+          echo "default build: $m compile lines carried -march=native"
+
+  omp-data-sharing:
+    # The leg that would have caught the bug that shipped: the released tip could not be
+    # compiled AT ALL by GCC 8, and nothing noticed. See review/GCC8-PORTABILITY-FIX-PLAN.md.
+    #
+    # Two compilers, because the two OpenMP revisions disagree and each rejects a DIFFERENT
+    # wrong spelling. Auditing the other jobs showed why neither was reachable: the only clang
+    # leg configures --enable-openmp=no, so clang never parses a pragma at all, and every job
+    # that does compile OpenMP runs the runner's default GCC (>= 13). Catching this needs
+    # GCC <= 8 WITH OpenMP on, or clang WITH OpenMP on, and no job satisfied either conjunction.
+    #
+    # Syntax-only, deliberately. This class of bug is a front-end diagnostic, so parsing is
+    # enough, and it costs seconds where a full build per compiler costs ~10 minutes. It will
+    # NOT catch link errors, ABI problems or miscompilation -- a chosen limit, so that the leg
+    # stays cheap enough to remain switched on.
+    #
+    # The old compiler runs via `docker run` rather than `container:`, so the checkout happens
+    # on the host with a current Node. actions/checkout inside an end-of-life image is a
+    # well-known way to lose an afternoon to glibc.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: host deps, and the vendored SPOOLES headers
+        run: |
+          set -e
+          # Same retry discipline as the other apt steps -- see "host build deps, with retries".
+          for i in 1 2 3 4; do timeout 180 sudo apt-get update -o Acquire::Retries=3 && break
+            [ "$i" = 4 ] && { echo "FAIL: apt-get update failed 4 times" >&2; exit 1; }; sleep $((i*15)); done
+          for i in 1 2 3 4; do timeout 300 sudo apt-get install -y -o Acquire::Retries=3 \
+              --no-install-recommends clang libomp-dev libgmp-dev && break
+            [ "$i" = 4 ] && { echo "FAIL: apt-get install failed 4 times" >&2; exit 1; }; sleep $((i*15)); done
+          # SPOOLES is a tracked tarball, so this needs no network.
+          mkdir -p /tmp/sp && tar xzf external/spooles/download/spooles.2.2.tgz -C /tmp/sp
+      - name: clang with OpenMP ON -- real sources, plus a control that must FAIL
+        run: |
+          set -e
+          I="-I. -Implapack -I/tmp/sp"
+          clang++ -fsyntax-only -fopenmp $I sdpa_linear.cpp sdpa_newton.cpp
+          clang++ -fsyntax-only -fopenmp tests/omp_datasharing.cpp
+          # NON-VACUITY: a leg that only compiles code that works cannot tell you it still
+          # detects code that does not.
+          if clang++ -fsyntax-only -fopenmp -DSPELLING_BAD_UNLISTED tests/omp_datasharing.cpp 2>/dev/null; then
+            echo "FAIL: clang accepted a const left out of default(none) -- this leg no longer" >&2
+            echo "      enforces the OpenMP 5.0 rule it exists to enforce" >&2
+            exit 1
+          fi
+          echo "clang: real sources parse with OpenMP on, and the 5.0 rule is enforced"
+      - name: GCC 8 -- the compiler the released tip could not be built by
+        run: |
+          set -e
+          docker run --rm -v "$PWD:/w" -w /w gcc:8 bash -c '
+            set -e
+            # Debian buster is past end of life, so its mirrors have moved to archive.
+            apt-get update >/dev/null 2>&1 || {
+              sed -i "s|deb.debian.org|archive.debian.org|g; s|security.debian.org|archive.debian.org|g; /-updates/d" /etc/apt/sources.list
+              apt-get -o Acquire::Check-Valid-Until=false update >/dev/null
+            }
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libgmp-dev >/dev/null
+            g++ --version | head -1
+            g++ -fsyntax-only -fopenmp -I. -Implapack sdpa_linear.cpp
+            g++ -fsyntax-only -fopenmp tests/omp_datasharing.cpp
+            if g++ -fsyntax-only -fopenmp -DSPELLING_BAD_SHARED_CONST tests/omp_datasharing.cpp 2>/dev/null; then
+              echo "FAIL: GCC 8 accepted a const named in shared() -- this leg no longer" >&2
+              echo "      detects the exact bug it was added for" >&2
+              exit 1
+            fi
+            echo "gcc 8: sdpa_linear.cpp parses, and the OpenMP 4.5 rule is enforced"
+          '
+      - name: the coverage claim must not go stale
+        run: |
+          set -e
+          # The GCC 8 leg checks sdpa_linear.cpp, which is where every default(none) in the
+          # tree lives. If one appears elsewhere, the claim silently narrows -- so fail loudly
+          # and say what to do instead.
+          f=$(grep -rl "default(none)" sdpa_*.cpp | sort | tr "\n" " ")
+          if [ "$f" != "sdpa_linear.cpp " ]; then
+            echo "FAIL: default(none) now appears in: $f" >&2
+            echo "      The GCC 8 leg only syntax-checks sdpa_linear.cpp. Add the new file to" >&2
+            echo "      that step, or this job stops covering what it claims to cover." >&2
+            exit 1
+          fi
+          echo "coverage: every default(none) in the tree is in a file this job checks"
+
+  build-guards:
+    # NEGATIVE tests for the two build guards added 2026-08-20. Every other job in this file
+    # proves a build that SHOULD work does work. None of them proved that a build that should
+    # FAIL actually fails -- so the guards themselves were untested, and a guard that never
+    # fires is indistinguishable from no guard at all.
+    #
+    # Four cases, each asserting on the guard's own message so that a build failing for some
+    # unrelated reason cannot be mistaken for the guard working.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: host build deps, with retries -- GitHub's apt mirrors stall intermittently
+        run: |
+          set -e
+          for i in 1 2 3 4; do
+            if timeout 180 sudo apt-get update -o Acquire::Retries=3; then break; fi
+            echo "apt-get update attempt $i timed out or failed; retrying" >&2
+            [ "$i" = 4 ] && { echo "FAIL: apt-get update failed 4 times" >&2; exit 1; }
+            sleep $((i * 15))
+          done
+          for i in 1 2 3 4; do
+            if timeout 300 sudo apt-get install -y -o Acquire::Retries=3 build-essential autoconf automake libtool; then break; fi
+            echo "apt-get install attempt $i timed out or failed; retrying" >&2
+            [ "$i" = 4 ] && { echo "FAIL: apt-get install failed 4 times" >&2; exit 1; }
+            sleep $((i * 15))
+          done
+      - run: autoreconf -fi
+      - name: guard 1 -- a C++ compiler without OpenMP must ABORT configure, not build serial
+        run: |
+          set -e
+          # AC_OPENMP does not fail on a compiler that lacks OpenMP: it records "unsupported"
+          # and continues, which is how a SERIAL binary can be produced by a run that reports
+          # success. The guard turns that into an error. Tested with a wrapper that rejects
+          # every OpenMP flag rather than with a real compiler, so the test does not depend on
+          # whether the runner image happens to ship libomp.
+          mkdir -p "$HOME/fakebin"
+          # printf, NOT a heredoc: a heredoc body inside an indented YAML block keeps the
+          # block's leading spaces, so "#!/bin/sh" would be written indented and the shebang
+          # would not be honoured -- the wrapper would run under the wrong shell or not at all.
+          {
+            printf '#!/bin/sh\n'
+            printf 'for a in "$@"; do\n'
+            printf '  case "$a" in\n'
+            printf '    -fopenmp*|-xopenmp*|-openmp|-qsmp*|-mp|-omp*|-Popenmp*|--openmp*|-homp|-qopenmp*)\n'
+            printf '      echo "$0: unrecognized command line option $a" >&2; exit 1;;\n'
+            printf '  esac\n'
+            printf 'done\n'
+            printf 'exec g++ "$@"\n'
+          } > "$HOME/fakebin/noomp-g++"
+          chmod +x "$HOME/fakebin/noomp-g++"
+          head -1 "$HOME/fakebin/noomp-g++" | grep -qx '#!/bin/sh' \
+            || { echo "FAIL: wrapper shebang is not on line 1 unindented; the test would be vacuous" >&2; exit 1; }
+          # sanity: the wrapper must actually reject the flag, or this test proves nothing
+          if "$HOME/fakebin/noomp-g++" -fopenmp -x c++ /dev/null -o /dev/null 2>/dev/null; then
+            echo "FAIL: the no-OpenMP wrapper accepted -fopenmp; the test is vacuous" >&2; exit 1
+          fi
+          # ...and must otherwise work, or configure would fail for the wrong reason
+          echo 'int main(){return 0;}' > /tmp/t.cpp
+          "$HOME/fakebin/noomp-g++" /tmp/t.cpp -o /tmp/t \
+            || { echo "FAIL: the wrapper cannot compile at all; the test would be misleading" >&2; exit 1; }
+
+          set +e
+          ./configure --enable-openmp=yes CXX="$HOME/fakebin/noomp-g++" > guard1.log 2>&1
+          rc=$?
+          set -e
+          [ "$rc" -ne 0 ] || { echo "FAIL: configure SUCCEEDED with a compiler that has no OpenMP -- the guard is gone, and this build would be silently serial" >&2; tail -20 guard1.log >&2; exit 1; }
+          grep -q "does not support OpenMP" guard1.log \
+            || { echo "FAIL: configure failed, but not with the guard's message -- it broke for some other reason, so this proves nothing" >&2; tail -30 guard1.log >&2; exit 1; }
+          echo "guard 1: configure aborted with '$(grep -m1 "does not support OpenMP" guard1.log)'"
+      - name: guard 1 escape hatch -- --disable-openmp with the SAME compiler must SUCCEED
+        run: |
+          set -e
+          # A guard that cannot be turned off deliberately is a bug, not a safeguard. The
+          # documented escape must work, or users with no OpenMP cannot build at all.
+          make distclean > /dev/null 2>&1 || true
+          ./configure --disable-openmp CXX="$HOME/fakebin/noomp-g++" > guard1b.log 2>&1 \
+            || { echo "FAIL: --disable-openmp did not survive a compiler without OpenMP" >&2; tail -20 guard1b.log >&2; exit 1; }
+          echo "guard 1 escape hatch: --disable-openmp configures cleanly"
+      - name: guard 2 -- SPOOLES refuses an empty, POSIX-default, or incapable CC
+        run: |
+          set -e
+          # The guards sit at the top of the work/$(BUILD_STAMP) recipe and fire before any
+          # compilation, so the configure stamp is faked rather than earned: this tests the
+          # guards, not the SPOOLES build, and takes seconds instead of minutes.
+          make distclean > /dev/null 2>&1 || true
+          ./configure --enable-openmp=no > cfgg2.log 2>&1 || { tail -20 cfgg2.log >&2; exit 1; }
+          mkdir -p external/spooles/work
+          touch external/spooles/work/.spooles_configure_done
+
+          expect_fail() {  # expect_fail <label> <needle> <make-args...>
+            label=$1; needle=$2; shift 2
+            set +e
+            out=$(make -C external/spooles work/.spooles_build_done "$@" 2>&1)
+            rc=$?
+            set -e
+            [ "$rc" -ne 0 ] || { echo "FAIL: $label -- make SUCCEEDED; the guard did not fire" >&2; echo "$out" >&2; exit 1; }
+            echo "$out" | grep -q "$needle" \
+              || { echo "FAIL: $label -- make failed but without '$needle', so it broke for another reason" >&2; echo "$out" >&2; exit 1; }
+            echo "  $label: fired with '$needle'"
+          }
+
+          expect_fail "empty CC"        "CC is empty"                  CC=
+          expect_fail "POSIX default"   "c99 rejects the -f flags"     CC=c99
+
+          # An INCAPABLE compiler that is NOT named c99. The name check cannot catch this; the
+          # -funroll-all-loops capability probe is what does. Without this case the probe could
+          # be deleted and every other test here would still pass.
+          {
+            printf '#!/bin/sh\n'
+            printf 'for a in "$@"; do case "$a" in -f*) echo "$0: illegal option" >&2; exit 1;; esac; done\n'
+            printf 'exec cc "$@"\n'
+          } > "$HOME/fakebin/nof-cc"
+          chmod +x "$HOME/fakebin/nof-cc"
+          head -1 "$HOME/fakebin/nof-cc" | grep -qx '#!/bin/sh' \
+            || { echo "FAIL: probe wrapper shebang is indented; the test would be vacuous" >&2; exit 1; }
+          "$HOME/fakebin/nof-cc" -funroll-all-loops -c /dev/null -o /tmp/x.o 2>/dev/null \
+            && { echo "FAIL: the incapable wrapper ACCEPTED -funroll-all-loops; the probe test is vacuous" >&2; exit 1; }
+          case "$HOME/fakebin/nof-cc" in *c99) echo "FAIL: rename the probe wrapper; it must NOT end in c99 or it tests the name check" >&2; exit 1;; esac
+          expect_fail "incapable CC"    "rejects -funroll-all-loops"   CC="$HOME/fakebin/nof-cc"
+
+          # And a capable compiler must get PAST the guards. Verified by the message NOT being
+          # a guard message: the recipe then proceeds into the real SPOOLES build, which has no
+          # extracted tree here, so it fails later and differently. That is the pass condition.
+          set +e
+          out=$(make -C external/spooles work/.spooles_build_done CC=gcc 2>&1)
+          set -e
+          if echo "$out" | grep -qE "CC is empty|c99 rejects the -f flags|rejects -funroll-all-loops"; then
+            echo "FAIL: a capable compiler (gcc) was rejected by one of the guards -- false positive" >&2
+            echo "$out" >&2; exit 1
+          fi
+          echo "  capable CC (gcc): passed all three guards"
+          echo "guard 2: empty, POSIX-default and incapable compilers all rejected; gcc accepted"
