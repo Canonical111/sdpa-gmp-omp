@@ -4,8 +4,9 @@
 Run:  python3 validate_integrity.py [--root DIR] [--fail-on-integrity]
 
 This is the validator behind the "N rows / M cells / zero integrity failures" claim in
-the benchmark documentation. The rows it reads sit beside it in this directory, one TSV per
-measured cell, one row per repeat.
+the benchmark documentation. The rows it reads sit beside it in this directory, ONE TSV PER
+MACHINE (gmp_fivehost_<host>.tsv), one row per repeat; each row's `src` column names the
+per-cell file it came from in the original campaign output.
 
 CHECKS. The first five were in the original. The last two were added because an independent review
 observed that the original could pass a cell whose repeat ids were duplicated or incomplete -- and
@@ -27,6 +28,16 @@ completeness, only consistency.
 A cell legitimately holding one repeat (the heavy tier) passes 8 and 9 with {1}. A cell holding
 {1, 1} fails 8 -- which is exactly the out_up / out_up12 collision -- and a cell holding {1, 3}
 fails 9.
+
+DOCUMENTED ANOMALIES AND STRICT MODE. This archive contains exactly one known anomaly, declared
+in KNOWN_ANOMALIES below and in README.md: the expanse 12_min/upstream/64-thread cell holds two
+repeat=1 rows, from two separate campaign invocations (src out_up/... and out_up12/...). The rows
+are kept VERBATIM -- relabelling a measured row's repeat id would be the kind of quiet data edit
+the rest of this file exists to catch. Instead, --fail-on-integrity passes when the archive
+matches its documentation EXACTLY: the known anomaly present with precisely the declared src
+pair, and nothing else wrong. It exits 1 both for any UNDOCUMENTED failure and for a documented
+anomaly that has gone MISSING or changed shape -- either direction means the archive no longer
+matches its documentation, and a strict gate that cannot detect the second is not a tamper check.
 """
 import csv, glob, collections, os, sys, argparse
 
@@ -39,6 +50,14 @@ EXPECT_PARAM = {
     "8_min": "e3e82d8dfcd9b7c3", "10_min": "e3e82d8dfcd9b7c3", "12_min": "e3e82d8dfcd9b7c3",
     "dE3": "3859004693f5546f", "dE4": "3859004693f5546f"}
 
+# (host, problem, arm, threads) -> the exact src set that constitutes the documented anomaly.
+KNOWN_ANOMALIES = {
+    ("expanse", "12_min", "up", "64"): {
+        "out_up/rows_H_12_min_t64.tsv",
+        "out_up12/rows_H_12_min_t64.tsv",
+    },
+}
+
 ap = argparse.ArgumentParser()
 ap.add_argument("--root", default=DEFAULT_ROOT)
 ap.add_argument("--fail-on-integrity", action="store_true")
@@ -47,6 +66,7 @@ ROOT = os.path.abspath(a.root)
 
 total_fail = 0
 grand_rows = grand_cells = grand_skipped = 0
+documented_seen = []
 for h in HOSTS:
     rows, skipped = [], 0
     # One TSV per machine. Each row carries a `src` column naming the per-cell file it came from
@@ -74,7 +94,12 @@ for h in HOSTS:
         if len({x["obj"] for x in rs}) > 1: fails.append("obj varies %s" % (k,))
         ids = [x["repeat"] for x in rs]
         if len(set(ids)) != len(ids):
-            fails.append("duplicate repeat ids %s: %s" % (k, sorted(ids)))
+            srcs = {x.get("src", "") for x in rs}
+            if KNOWN_ANOMALIES.get((h,) + k) == srcs:
+                documented_seen.append((h,) + k)
+            else:
+                fails.append("duplicate repeat ids %s: %s (srcs %s)"
+                             % (k, sorted(ids), sorted(srcs)))
         elif sorted(int(i) for i in ids) != list(range(1, len(ids) + 1)):
             fails.append("non-contiguous repeat ids %s: %s" % (k, sorted(ids)))
     badst = [r for r in rows if r["status"] not in ("ok", "partial")]
@@ -102,15 +127,26 @@ for h in HOSTS:
     print("  status not ok/partial : %d" % len(badst))
     print("  missing cpuset        : %d" % len(nocpu))
     print("  param-family mismatch : %d" % len(pmis))
-    print("  repeat-id anomalies   : %d"
-          % len([x for x in fails if "repeat ids" in x]))
+    print("  repeat-id anomalies   : %d undocumented, %d documented-and-expected"
+          % (len([x for x in fails if "repeat ids" in x]),
+             len([a for a in documented_seen if a[0] == h])))
     print("  cross-arm objective   : %d problems identical, %d mismatched" % (xok, len(xarm)))
     print("  INTEGRITY FAILURES    : %d" % len(fails))
     for x in fails[:8]:
         print("      %s" % x)
 
+# A documented anomaly that is MISSING is itself a failure: the archive would no longer match
+# its documentation, which is what a tamper-check must refuse to bless.
+for key in KNOWN_ANOMALIES:
+    if key not in documented_seen:
+        total_fail += 1
+        print("FAIL: documented anomaly %s NOT FOUND -- archive does not match its documentation"
+              % (key,), file=sys.stderr)
+
 print("\n%s\nTOTALS: %d rows, %d cells, %d skipped declared-but-unexecuted"
       % ("=" * 70, grand_rows, grand_cells, grand_skipped))
-print("TOTAL INTEGRITY FAILURES ACROSS ALL HOSTS: %d\n%s" % (total_fail, "=" * 70))
+print("documented anomalies present as declared: %d of %d"
+      % (len(documented_seen), len(KNOWN_ANOMALIES)))
+print("UNDOCUMENTED INTEGRITY FAILURES ACROSS ALL HOSTS: %d\n%s" % (total_fail, "=" * 70))
 if a.fail_on_integrity and total_fail:
     sys.exit(1)

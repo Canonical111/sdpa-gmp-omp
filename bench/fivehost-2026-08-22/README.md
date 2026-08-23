@@ -21,10 +21,14 @@ Rows with `wall_s = -` are declared-but-unexecuted dispositions, not measurement
 Check the integrity yourself (repeats agreeing on status/iterations/objective, statuses,
 parameter families, cross-arm objective identity, repeat-id uniqueness and contiguity):
 
-    python3 validate_integrity.py            # report
-    python3 validate_integrity.py --fail-on-integrity   # exit 1 on any failure
+    python3 validate_integrity.py                       # report
+    python3 validate_integrity.py --fail-on-integrity   # strict: exit 0 iff archive matches its documentation
 
-Expected output ends: 1,320 rows, 507 cells, **ONE** integrity failure — the known duplicate
-`12_min`/upstream/64-thread cell on expanse, where two campaign invocations each produced a
-`repeat=1` row (1,913.53 s and 1,921.50 s, 0.42% apart). BENCHMARKS.md publishes their median and
-declares `n_obs=2` for that cell; the validator flags it by design rather than hiding it.
+Expected: 1,320 rows, 507 cells, zero **undocumented** failures, and exactly one **documented
+anomaly present as declared** — the known duplicate `12_min`/upstream/64-thread cell on expanse,
+where two campaign invocations each produced a `repeat=1` row (1,913.53 s and 1,921.50 s, 0.42%
+apart; `src` = `out_up/…` and `out_up12/…`). BENCHMARKS.md publishes their median and declares
+`n_obs=2` for that cell. The rows are kept **verbatim** — relabelling a measured row would be the
+kind of quiet edit this validator exists to catch — so strict mode instead knows the anomaly's
+exact signature and fails in *both* directions: if anything undocumented appears, **or** if the
+documented duplicate ever goes missing or changes shape. CI runs the strict check on every push.
