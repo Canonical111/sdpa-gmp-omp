@@ -28,7 +28,9 @@
 Fork base: upstream `ca110db`. **Requested 200-bit precision; GMP rounds up to 256 bits
 (5 limbs), which is the actual working precision.**
 
-**Every number on this page can be re-derived from raw data in this repository.** The
+**Every sdpa-gmp number on this page can be re-derived from raw data in this repository.**
+(The one exception is the SDPB side of the comparison section: SDPB's raw per-cell output lives
+in the non-public companion repository and the Expanse share, as that section states.) The
 2026-08-22 five-host campaign — the current reference — is one per-repeat TSV per machine:
 
 | [`bench/fivehost-2026-08-22/`](bench/fivehost-2026-08-22/) | rows |
