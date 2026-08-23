@@ -1774,3 +1774,51 @@ jobs:
           fi
           echo "  capable CC (gcc): passed all three guards"
           echo "guard 2: empty, POSIX-default and incapable compilers all rejected; gcc accepted"
+
+  installer:
+    # The packaged installer IS the advertised path (README: "one-command"; the install-sdpa-omp
+    # skill makes it the standard route), yet until 2026-08-22 CI reconstructed the same build
+    # by hand and never executed install.sh itself -- so a regression in the installer would ship
+    # with green CI. This job runs the script exactly as a user would, both modes, in one tree
+    # (the second run also exercises the mode switch and the unconditional autoreconf on a tree
+    # that already has a configure). It also strict-checks the published five-host benchmark
+    # archive against its own documentation.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: host build deps, with retries -- same rationale as the build jobs
+        run: |
+          set -e
+          for i in 1 2 3 4; do
+            if timeout 180 sudo apt-get update -o Acquire::Retries=3; then break; fi
+            echo "apt-get update attempt $i timed out or failed; retrying" >&2
+            [ "$i" = 4 ] && { echo "FAIL: apt-get update failed 4 times" >&2; exit 1; }
+            sleep $((i * 15))
+          done
+          for i in 1 2 3 4; do
+            if timeout 300 sudo apt-get install -y -o Acquire::Retries=3 build-essential autoconf automake libtool; then break; fi
+            echo "apt-get install attempt $i timed out or failed; retrying" >&2
+            [ "$i" = 4 ] && { echo "FAIL: apt-get install failed 4 times" >&2; exit 1; }
+            sleep $((i * 15))
+          done
+      - name: packaged installer, default OpenMP path
+        run: |
+          set -e
+          bash .claude/skills/install-sdpa-omp/scripts/install.sh 2>&1 | tee /tmp/inst1.log
+          grep -q "OpenMP runtime markers: 1" /tmp/inst1.log \
+            || { echo "FAIL: OpenMP install did not report a linked OpenMP runtime" >&2; exit 1; }
+          tail -1 /tmp/inst1.log | grep -q "OMP_NUM_THREADS" \
+            || { echo "FAIL: OpenMP install must end with thread guidance" >&2; exit 1; }
+      - name: packaged installer, --serial in the SAME tree (mode switch + reconfigure)
+        run: |
+          set -e
+          bash .claude/skills/install-sdpa-omp/scripts/install.sh --serial 2>&1 | tee /tmp/inst2.log
+          grep -q "OpenMP runtime markers: 0" /tmp/inst2.log \
+            || { echo "FAIL: serial install reported OpenMP markers" >&2; exit 1; }
+          tail -1 /tmp/inst2.log | grep -q "SERIAL" \
+            || { echo "FAIL: a serial install must not end with OpenMP advice (finding 2 of the 2026-08-22 review)" >&2; exit 1; }
+      - name: five-host benchmark archive matches its documentation, strictly
+        run: |
+          set -e
+          cd bench/fivehost-2026-08-22
+          python3 validate_integrity.py --fail-on-integrity
