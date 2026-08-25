@@ -318,14 +318,13 @@ ratio here is like-for-like and equals a per-iteration ratio.
 |---|---:|---:|---:|
 | 1 thread | 196.27 s | 175.77 s | 1.12× |
 | 32 threads | 115.10 s | **32.13 s** | **3.58×** |
-| fork @32 vs upstream **serial** | 196.27 s | **32.13 s** | **6.11×** |
 
 ### What 32 cores buy each side
 
 | | 1 → 32 threads | gain |
 |---|---|---|
 | upstream, five problems | 196.27 → 115.10 s | **1.71×** |
-| fork, five problems | 175.77 → 32.13 s | **6.1×** |
+| fork, five problems | 175.77 → 32.13 s | **5.47×** |
 | upstream, `12_min` | 3951 → 2046 s | **1.93×** |
 | fork, `12_min` | 3765 → 246 s | **15.3×** |
 

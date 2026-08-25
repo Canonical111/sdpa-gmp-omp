@@ -82,15 +82,13 @@ counts are identical in all 70 paired runs, so every ratio is like-for-like.
 |---|---:|---:|---|
 | 5 SDPLIB problems, both at **1 thread** | 196.3 s | 175.8 s | 1.12× |
 | 5 SDPLIB problems, both at **32 threads** | 115.1 s | **32.1 s** | **3.58×** |
-| 5 SDPLIB problems, fork @32 vs upstream **serial** | 196.3 s | **32.1 s** | **6.11×** |
 | a large problem (`12_min`), both at 32 threads | 2046 s | **246 s** | **8.32×** |
 
-The first two rows are like-for-like at the same thread count; the third is what a user actually
-trades — one core of upstream against a whole node of this fork.
+Every row is like-for-like: each compares the two arms at the same thread count.
 
 **Almost the whole gain is scaling, not faster kernels — and that is the point.** At one thread
 this fork is only 1.05–1.21× faster. What differs is what the 2nd through 32nd core buy: over
-those five problems upstream gains 1.71× and this fork **6.1×**; on `12_min`, 1.93× against
+those five problems upstream gains 1.71× and this fork **5.47×**; on `12_min`, 1.93× against
 **15.3×**. On `truss5` upstream threading buys nothing measurable at all — 12.29 s at one thread,
 12.13 s at thirty-two.
 
@@ -141,7 +139,6 @@ supports, upstream `ca110db` swept over the same ladder.
 | upstream, **its own best** | 150.3 s | 55.5 s | 126.4 s |
 | **this fork, its own best** | **63.3 s** @8 thr | **18.1 s** @24 thr | **52.9 s** @8 thr |
 | → at each one's best | **2.38×** | **3.08×** | **2.39×** |
-| → fork @best vs upstream **serial** | **3.48×** | **5.15×** | **3.36×** |
 
 These understate the fork, for a reason no rerun fixes: the five SDPLIB problems are small
 (m ≤ 208), and 8 cores is where a threaded fork and a barely-threaded upstream look most alike.
