@@ -78,20 +78,15 @@ not against a serial build chosen for it. Same compiler, flags, bundled GMP sour
 own `param.sdpa` (requested 200-bit, actual 256-bit). External wall clock, median of 3. Iteration
 counts are identical in all 70 paired runs, so every ratio is like-for-like.
 
-Five SDPLIB problems, total wall clock. There is **one fork measurement**, at 32 threads, and two
-upstream baselines to read it against — upstream at its own best, and upstream serial:
-
-| five SDPLIB problems, total | time | this fork is |
-|---|---:|---:|
-| upstream, **serial** (1 thread) | 196.3 s | **6.11× faster** |
-| upstream, **32 threads** (its own best) | 115.1 s | **3.58× faster** |
-| **this fork, 32 threads** | **32.1 s** | — |
-
-And one large problem, both arms at 32 threads:
-
-| `12_min` | upstream | this fork | |
+| | upstream | this fork | |
 |---|---:|---:|---|
-| total wall clock | 2046 s | **246 s** | **8.32×** |
+| 5 SDPLIB problems, both at **1 thread** | 196.3 s | 175.8 s | 1.12× |
+| 5 SDPLIB problems, both at **32 threads** | 115.1 s | **32.1 s** | **3.58×** |
+| 5 SDPLIB problems, fork @32 vs upstream **serial** | 196.3 s | **32.1 s** | **6.11×** |
+| a large problem (`12_min`), both at 32 threads | 2046 s | **246 s** | **8.32×** |
+
+The first two rows are like-for-like at the same thread count; the third is what a user actually
+trades — one core of upstream against a whole node of this fork.
 
 **Almost the whole gain is scaling, not faster kernels — and that is the point.** At one thread
 this fork is only 1.05–1.21× faster. What differs is what the 2nd through 32nd core buy: over
