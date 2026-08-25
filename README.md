@@ -136,9 +136,13 @@ supports, upstream `ca110db` swept over the same ladder.
 | upstream, **serial** (1 thread) | 220.4 s | 93.0 s | 177.9 s |
 | this fork, **serial** (1 thread) | 189.1 s | 82.9 s | 156.3 s |
 | → like-for-like at 1 thread | 1.17× | 1.12× | 1.14× |
-| upstream, **its own best** | 150.3 s | 55.5 s | 126.4 s |
+| upstream, **its own best** | 150.3 s @8 thr | 55.5 s @24 thr | 126.4 s @8 thr |
 | **this fork, its own best** | **63.3 s** @8 thr | **18.1 s** @24 thr | **52.9 s** @8 thr |
 | → at each one's best | **2.38×** | **3.08×** | **2.39×** |
+
+On all three machines both arms are fastest at the full thread count, so the "own best" row is
+also like-for-like — unlike the 2×64-core EPYC above, where the two arms peak at different thread
+counts on 5 of 7 problems (`12_min`: upstream at 64, the fork at 128).
 
 These understate the fork, for a reason no rerun fixes: the five SDPLIB problems are small
 (m ≤ 208), and 8 cores is where a threaded fork and a barely-threaded upstream look most alike.
