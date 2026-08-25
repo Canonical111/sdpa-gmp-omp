@@ -81,10 +81,10 @@ counts are identical in all 70 paired runs, so every ratio is like-for-like.
 Five SDPLIB problems, total wall clock. There is **one fork measurement**, at 32 threads, and two
 upstream baselines to read it against — upstream at its own best, and upstream serial:
 
-| five SDPLIB problems, total | time | fork is |
+| five SDPLIB problems, total | time | this fork is |
 |---|---:|---:|
-| upstream, **serial** (1 thread) | 196.3 s | **6.11×** slower |
-| upstream, **32 threads** (its own best) | 115.1 s | **3.58×** slower |
+| upstream, **serial** (1 thread) | 196.3 s | **6.11× faster** |
+| upstream, **32 threads** (its own best) | 115.1 s | **3.58× faster** |
 | **this fork, 32 threads** | **32.1 s** | — |
 
 And one large problem, both arms at 32 threads:
