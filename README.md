@@ -135,11 +135,13 @@ supports, upstream `ca110db` swept over the same ladder.
 
 | five SDPLIB problems, total | EPYC 7232P (8 cores) | i9-13900K (24 cores, 8P+16E) | M1 Max (8P+2E) |
 |---|---|---|---|
-| upstream, serial | 220.4 s | 93.0 s | 177.9 s |
-| upstream, its own best | 150.3 s | 55.5 s | 126.4 s |
+| upstream, **serial** (1 thread) | 220.4 s | 93.0 s | 177.9 s |
+| this fork, **serial** (1 thread) | 189.1 s | 82.9 s | 156.3 s |
+| → like-for-like at 1 thread | 1.17× | 1.12× | 1.14× |
+| upstream, **its own best** | 150.3 s | 55.5 s | 126.4 s |
 | **this fork, its own best** | **63.3 s** @8 thr | **18.1 s** @24 thr | **52.9 s** @8 thr |
-| fork vs upstream **at each one's best** | **2.38×** | **3.08×** | **2.39×** |
-| fork vs upstream **serial** | **3.48×** | **5.15×** | **3.36×** |
+| → at each one's best | **2.38×** | **3.08×** | **2.39×** |
+| → fork @best vs upstream **serial** | **3.48×** | **5.15×** | **3.36×** |
 
 These understate the fork, for a reason no rerun fixes: the five SDPLIB problems are small
 (m ≤ 208), and 8 cores is where a threaded fork and a barely-threaded upstream look most alike.
