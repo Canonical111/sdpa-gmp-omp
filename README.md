@@ -119,17 +119,32 @@ and `gpp100`. It is modestly heavier on `truss5` (1.12×) and materially heavier
 `10_min` and `12_min` (2.2–2.6×), where threaded work needs real per-thread scratch.
 [BENCHMARKS.md](BENCHMARKS.md) has the per-thread table and the growth figures.
 
-<details><summary>Earlier small-machine measurements (8–24 cores), for reference</summary>
+<details><summary>Small machines (8–24 cores), same five SDPLIB problems — remeasured 2026-08-22</summary>
 
-| | EPYC 7232P (8 cores) | i9-13900K (24 cores) | M1 Max (8P+2E) |
+Part of the same five-host campaign, so these are current: 3 repeats per cell, the full thread
+ladder each machine supports, upstream `ca110db` swept over the same ladder.
+
+| five SDPLIB problems, total | EPYC 7232P (8 cores) | i9-13900K (24 cores, 8P+16E) | M1 Max (8P+2E) |
 |---|---|---|---|
-| upstream, serial | 223.2 s | 92.7 s | 172.0 s |
-| **this fork** | **94.5 s (2.36×)** | **27.6 s (3.36×)** | **63.3 s (2.72×)** |
+| upstream, serial | 220.4 s | 93.0 s | 177.9 s |
+| upstream, its own best | 150.3 s | 55.5 s | 126.4 s |
+| **this fork, its own best** | **63.3 s** @8 thr | **18.1 s** @24 thr | **52.9 s** @8 thr |
+| fork vs upstream **at each one's best** | **2.38×** | **3.08×** | **2.39×** |
+| fork vs upstream **serial** | **3.48×** | **5.15×** | **3.36×** |
 
-These were the headline until 2026-08-16 and understate the fork: the five SDPLIB problems are
-small (m ≤ 208), 8 cores is where a threaded fork and a barely-threaded upstream look most alike,
-and the numbers predate the threaded sparse Cholesky, the threaded `bMat` assembly and the
-threaded triangular solve.
+**These supersede the pre-2026-08-16 figures** (2.36× / 3.36× / 2.72× against upstream serial),
+which predated the threaded sparse Cholesky, the threaded `bMat` assembly and the threaded
+triangular solve. The gain from adding those is visible by comparing like with like: on the
+i9-13900K the same five problems went from 27.6 s to **18.1 s** at 24 threads, while upstream's
+serial total is unchanged within noise (92.7 s then, 93.0 s now) — a useful cross-check, since
+upstream itself did not change.
+
+Even so these understate the fork, for a reason no rerun fixes: the five SDPLIB problems are small
+(m ≤ 208), and 8 cores is where a threaded fork and a barely-threaded upstream look most alike.
+The large-problem results above are where the difference actually lives.
+
+Raw per-repeat rows: [`bench/fivehost-2026-08-22/`](bench/fivehost-2026-08-22/)
+(`gmp_fivehost_{thanos,pi,mac}.tsv`).
 
 </details>
 
