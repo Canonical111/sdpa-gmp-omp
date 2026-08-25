@@ -59,7 +59,7 @@ they would need re-measuring, which is also why the OpenMP thresholds carry a pr
 **Reporting that does not lie.** A recoverable numerical failure is reported as
 `solveStatus = PARTIAL` naming the failing iteration. Upstream exits 0 on every path.
 
-## The benchmarks: best-replicated first, then the current reference
+## The benchmarks
 
 Three views of the same solver, strongest replication first:
 
