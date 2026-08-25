@@ -61,11 +61,16 @@ they would need re-measuring, which is also why the OpenMP thresholds carry a pr
 
 ## The benchmarks: best-replicated first, then the current reference
 
-Two campaigns are summarised here. The table directly below is the **best-replicated** one
-(3 repeats, 70 paired runs, zero iteration-count mismatches; 32-thread cap). The subsection after
-it is the **current reference** (full 1→128 ladder, per-family parameters, large sparse problems;
-mostly single runs). [BENCHMARKS.md](BENCHMARKS.md) is the full dossier and says which table to
-use for what.
+Three views of the same solver, strongest replication first:
+
+- **directly below** — the **best-replicated** comparison: 3 repeats, 70 paired runs, zero
+  iteration-count mismatches, on one EPYC 7742 node capped at 32 threads;
+- **the full 1→128 ladder** — the **current reference** for scope: every thread count, per-family
+  parameter files, and the large sparse problems, though mostly single runs on the heavy tier;
+- **small machines** — the same five SDPLIB problems on an 8-core workstation, a 24-core hybrid
+  desktop and a laptop, 3 repeats.
+
+[BENCHMARKS.md](BENCHMARKS.md) is the full dossier and says which table to use for what.
 
 One AMD EPYC 7742 node at 32 threads, against upstream `ca110db` from a pristine clone built
 **`--enable-openmp=yes`** and swept over the same thread counts — upstream compared at *its* best,
@@ -128,10 +133,10 @@ and `gpp100`. It is modestly heavier on `truss5` (1.12×) and materially heavier
 `10_min` and `12_min` (2.2–2.6×), where threaded work needs real per-thread scratch.
 [BENCHMARKS.md](BENCHMARKS.md) has the per-thread table and the growth figures.
 
-<details><summary>Small machines (8–24 cores), same five SDPLIB problems — remeasured 2026-08-22</summary>
+### Small machines (8–24 cores), same five SDPLIB problems
 
-Part of the same five-host campaign, so these are current: 3 repeats per cell, the full thread
-ladder each machine supports, upstream `ca110db` swept over the same ladder.
+From the same five-host campaign: 3 repeats per cell, the full thread ladder each machine
+supports, upstream `ca110db` swept over the same ladder.
 
 | five SDPLIB problems, total | EPYC 7232P (8 cores) | i9-13900K (24 cores, 8P+16E) | M1 Max (8P+2E) |
 |---|---|---|---|
@@ -141,19 +146,15 @@ ladder each machine supports, upstream `ca110db` swept over the same ladder.
 | fork vs upstream **at each one's best** | **2.38×** | **3.08×** | **2.39×** |
 | fork vs upstream **serial** | **3.48×** | **5.15×** | **3.36×** |
 
-**These supersede the pre-2026-08-16 figures** (2.36× / 3.36× / 2.72× against upstream serial),
-which predated the threaded sparse Cholesky, the threaded `bMat` assembly and the threaded
-triangular solve. The gain from adding those is visible by comparing like with like: on the
-i9-13900K the same five problems went from 27.6 s to **18.1 s** at 24 threads, while upstream's
-serial total is unchanged within noise (92.7 s then, 93.0 s now) — a useful cross-check, since
-upstream itself did not change.
-
-Even so these understate the fork, for a reason no rerun fixes: the five SDPLIB problems are small
+These understate the fork, for a reason no rerun fixes: the five SDPLIB problems are small
 (m ≤ 208), and 8 cores is where a threaded fork and a barely-threaded upstream look most alike.
 The large-problem results above are where the difference actually lives.
 
+The threaded sparse Cholesky, `bMat` assembly and triangular solve are visible by comparing like
+with like against the older measurements they replace: on the i9-13900K the same five problems at
+the same 24 threads went from 27.6 s to **18.1 s**, while upstream's serial total is unchanged
+within noise (92.7 s then, 93.0 s now) — as it must be, since upstream did not change.
+
 Raw per-repeat rows: [`bench/fivehost-2026-08-22/`](bench/fivehost-2026-08-22/)
 (`gmp_fivehost_{thanos,pi,mac}.tsv`).
-
-</details>
 
